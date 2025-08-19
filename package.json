@@ -1,0 +1,9 @@
+{
+  "name": "agent-aura-mvp",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "cd frontend && npm run dev",
+    "start": "node backend/server.js"
+  }
+}
