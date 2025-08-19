@@ -1,20 +1,12 @@
 <template>
-  <div id="app">
-    <h1>Agent Aura MVP</h1>
-    <p>Welcome to the MVP dashboard</p>
-  </div>
+  <main style="padding:24px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial">
+    <nav style="display:flex;gap:12px;margin-bottom:16px">
+      <router-link to="/">Dashboard</router-link>
+      <router-link to="/login">Login</router-link>
+      <router-link to="/pricing">Pricing</router-link>
+      <router-link to="/magic-submit">Magic Submit</router-link>
+    </nav>
+    <!-- This renders the current route -->
+    <router-view />
+  </main>
 </template>
-
-<script>
-export default {
-  name: 'App'
-}
-</script>
-
-<style>
-#app {
-  font-family: Arial, sans-serif;
-  text-align: center;
-  margin-top: 50px;
-}
-</style>
