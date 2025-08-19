@@ -1,17 +1,19 @@
+// frontend/src/router.ts
 import { createRouter, createWebHistory } from 'vue-router'
-import { useAuth } from './useAuth'
 
-const routes = [
-  { path: '/', component: () => import('./pages/Landing.vue') },
-  { path: '/pricing', component: () => import('./pages/Pricing.vue') },
-  { path: '/login', component: () => import('./pages/Login.vue') },
-  { path: '/magic-submit', component: () => import('./pages/MagicSubmit.vue') }, // public form
-  { path: '/app', component: () => import('./pages/AppHome.vue'), meta: { requiresAuth: true } }, // tester area
-]
+// Use the files you actually have in /src
+const Dashboard   = () => import('./AppHome.vue')
+const Login       = () => import('./Login.vue')
+const Pricing     = () => import('./Pricing.vue')
+const MagicSubmit = () => import('./MagicSubmit.vue')
 
-const router = createRouter({ history: createWebHistory(), routes })
-router.beforeEach((to) => {
-  const { user } = useAuth()
-  if (to.meta.requiresAuth && !user.value) return { path: '/login', query: { next: to.fullPath } }
+export default createRouter({
+  history: createWebHistory(),
+  routes: [
+    { path: '/',             name: 'dashboard',   component: Dashboard },
+    { path: '/login',        name: 'login',       component: Login },
+    { path: '/pricing',      name: 'pricing',     component: Pricing },
+    { path: '/magic-submit', name: 'magic',       component: MagicSubmit },
+    { path: '/:pathMatch(.*)*', redirect: '/' }
+  ]
 })
-export default router
