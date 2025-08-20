@@ -1,24 +1,24 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { user } from './useAuth'
+import { useAuthStore } from './stores/auth'
 
-const Dashboard   = () => import('./AppHome.vue')
-const Login       = () => import('./Login.vue')
-const Pricing     = () => import('./Pricing.vue')
-const MagicSubmit = () => import('./MagicSubmit.vue')
+const routes = [
+  { path: '/', component: () => import('./pages/Landing.vue') },
+  { path: '/login', component: () => import('./pages/Login.vue') },
+  { path: '/signup', component: () => import('./pages/Signup.vue') },
+  { path: '/magic-submit', component: () => import('./pages/MagicSubmit.vue') },
+  { path: '/@:handle', component: () => import('./AgentPublic.vue'), props: true },
+  { path: '/app', component: () => import('./pages/AppHome.vue'), meta: { auth: true } },
+  { path: '/app/settings', component: () => import('./pages/Settings.vue'), meta: { auth: true } },
+  { path: '/app/requests/new', component: () => import('./pages/NewRequest.vue'), meta: { auth: true } },
+]
 
-const router = createRouter({
-  history: createWebHistory(),
-  routes: [
-    { path: '/',             name: 'dashboard', component: Dashboard },
-    { path: '/login',        name: 'login',     component: Login },
-    { path: '/pricing',      name: 'pricing',   component: Pricing },
-    { path: '/magic-submit', name: 'magic',     component: MagicSubmit },
-    { path: '/app',          name: 'app',       component: Dashboard, meta:{ requiresAuth:true } },
-    { path: '/:pathMatch(.*)*', redirect: '/' }
-  ]
+const router = createRouter({ history: createWebHistory(), routes })
+
+router.beforeEach(async (to) => {
+  const auth = useAuthStore()
+  if (auth.loading) await auth.init()
+  if (to.meta.auth && !auth.user) return '/login'
+  if ((to.path === '/login' || to.path === '/signup') && auth.user) return '/app'
 })
 
-router.beforeEach((to) => {
-  if (to.meta.requiresAuth && !user.value) return { path: '/login', query: { next: to.fullPath } }
-})
 export default router
