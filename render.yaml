@@ -3,18 +3,14 @@ services:
     name: agent-aura-frontend
     env: node
     rootDir: frontend
-    buildCommand: npm install && npm run build
-    startCommand: npm run preview
-    envVars:
-      - key: NODE_VERSION
-        value: 18
+    nodeVersion: 22.16.0
+    buildCommand: npm ci && npm run build
+    startCommand: npm run preview -- --host 0.0.0.0 --port $PORT
 
   - type: web
     name: agent-aura-backend
     env: node
     rootDir: backend
-    buildCommand: npm install
+    nodeVersion: 22.16.0
+    buildCommand: npm ci
     startCommand: node server.js
-    envVars:
-      - key: NODE_VERSION
-        value: 18
