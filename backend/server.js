@@ -4,61 +4,84 @@ import express from 'express'
 import cors from 'cors'
 import morgan from 'morgan'
 import { createClient } from '@supabase/supabase-js'
-import { createRemoteJWKSet, jwtVerify } from 'jose'
+import { createRemoteJWKSet, jwtVerify, decodeProtectedHeader } from 'jose'
 
 /* ---------------------------
-   Config & Clients
+   App & Middleware
 ---------------------------- */
 const app = express()
 
-// CORS: comma-separated list of allowed origins (no spaces)
+// CORS: set CORS_ORIGIN as comma-separated list (no spaces)
 const allowedOrigins = process.env.CORS_ORIGIN?.split(',') ?? ['*']
 app.use(cors({ origin: allowedOrigins }))
 app.use(express.json({ limit: '1mb' }))
 app.use(morgan('dev'))
 
-// Supabase (server-side)
+/* ---------------------------
+   Supabase Clients & Config
+---------------------------- */
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE) {
   console.warn('⚠️  Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE')
 }
 const supa = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE)
 
-// JWKS for verifying Supabase user JWTs
-if (!process.env.SUPABASE_JWKS_URL) {
-  console.warn('⚠️  SUPABASE_JWKS_URL not set; protected routes will fail.')
-}
-const JWKS = process.env.SUPABASE_JWKS_URL
+// RS256 verification (JWKS)
+const jwks = process.env.SUPABASE_JWKS_URL
   ? createRemoteJWKSet(new URL(process.env.SUPABASE_JWKS_URL))
   : null
 
+// HS256 verification (shared secret)
+const hsSecret = process.env.SUPABASE_JWT_SECRET
+  ? new TextEncoder().encode(process.env.SUPABASE_JWT_SECRET)
+  : null
+
 /* ---------------------------
-   Auth Middleware
+   Auth: Dual-mode verifier
+   - Accepts RS256 (JWKS) or HS256 (JWT secret)
 ---------------------------- */
+async function verifySupabaseToken(token) {
+  const { alg } = decodeProtectedHeader(token) || {}
+
+  if (alg === 'RS256') {
+    if (!jwks) throw new Error('JWKS not configured for RS256 tokens')
+    const { payload } = await jwtVerify(token, jwks, {
+      algorithms: ['RS256'],
+      clockTolerance: 5
+    })
+    return payload
+  }
+
+  if (alg === 'HS256') {
+    if (!hsSecret) throw new Error('HS256 secret not configured (SUPABASE_JWT_SECRET)')
+    const { payload } = await jwtVerify(token, hsSecret, {
+      algorithms: ['HS256'],
+      clockTolerance: 5
+    })
+    return payload
+  }
+
+  throw new Error(`Unsupported alg: ${alg}`)
+}
+
 async function requireAuth(req, res, next) {
   try {
-    if (!JWKS) return res.status(500).json({ error: 'Auth not configured' })
     const auth = req.headers.authorization || ''
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : null
     if (!token) return res.status(401).json({ error: 'Missing token' })
 
-    const { payload } = await jwtVerify(token, JWKS, {
-      algorithms: ['RS256'],
-      clockTolerance: 5 // seconds
-      // (Optional) add issuer/aud checks later if desired
-    })
+    const payload = await verifySupabaseToken(token)
     req.user = { id: payload.sub, email: payload.email }
     next()
   } catch (err) {
     console.error('JWT verify failed:', err?.message)
-    return res.status(401).json({ error: 'Invalid token' })
+    return res.status(401).json({ error: 'Invalid token', reason: err?.message })
   }
 }
 
 /* ---------------------------
    Routes
 ---------------------------- */
-
-// Health/root
+// Health
 app.get('/', (_req, res) => res.json({ ok: true }))
 
 // Public sanity route
@@ -66,13 +89,12 @@ app.get('/api/hello', (_req, res) => {
   res.json({ message: 'Hello from Agent Aura API 🎉' })
 })
 
-// Protected: who am I?
+// Who am I? (protected)
 app.get('/api/me', requireAuth, (req, res) => {
   res.json({ ok: true, user: req.user })
 })
 
-// Protected: list my reviews (most recent first)
-// GET /api/reviews?limit=20
+// List my reviews (protected)  GET /api/reviews?limit=20
 app.get('/api/reviews', requireAuth, async (req, res) => {
   try {
     const agentId = req.user.id
@@ -92,14 +114,12 @@ app.get('/api/reviews', requireAuth, async (req, res) => {
   }
 })
 
-// Public: Magic Submit — persist a review for an agent by handle or UUID
-// POST /api/reviews/submit?a=<handle or agent_id>
+// Public Magic Submit — POST /api/reviews/submit?a=<handle or agent_id>
 // body: { rating, text, name?, email? }
 app.post('/api/reviews/submit', async (req, res) => {
   try {
     const { rating, text, name, email } = req.body || {}
     const a = (req.query.a || '').toString().trim()
-
     if (!a || !rating || !text) {
       return res.status(400).json({ error: 'rating, text, and agent handle required' })
     }
@@ -141,10 +161,12 @@ app.post('/api/reviews/submit', async (req, res) => {
   }
 })
 
-// 404 fallback
+// 404
 app.use((_req, res) => res.status(404).json({ error: 'Route not found' }))
 
-// Start
+/* ---------------------------
+   Start
+---------------------------- */
 const PORT = process.env.PORT || 8788
 app.listen(PORT, () => {
   console.log(`API listening on :${PORT}`)
