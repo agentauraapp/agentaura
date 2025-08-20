@@ -1,7 +1,7 @@
 import { createRouter, createWebHistory, RouteRecordRaw } from 'vue-router'
 
 // point ONLY to files that really exist right now
-const AgentProfile = () => import('./views/AgentProfile.vue')
+const AgentProfile = () => import('@/views/AgentProfile.vue')
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/agent' },
