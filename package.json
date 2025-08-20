@@ -1,9 +1,19 @@
 {
-  "name": "agent-aura-mvp",
+  "name": "agentaura-frontend",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
-    "dev": "cd frontend && npm run dev",
-    "start": "node backend/server.js"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "vue": "^3.4.0",
+    "pinia": "^2.1.7"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0",
+    "@vitejs/plugin-vue": "^5.0.0"
   }
 }
