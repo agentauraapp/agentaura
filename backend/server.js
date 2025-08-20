@@ -4,6 +4,9 @@ import express from 'express'
 import cors from 'cors'
 import morgan from 'morgan'
 import { createRemoteJWKSet, jwtVerify } from 'jose'
+import { createClient } from '@supabase/supabase-js'
+
+const supa = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE)
 
 /**
  * CORS: allow one or more origins (comma-separated, no spaces)
