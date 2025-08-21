@@ -17,6 +17,7 @@ const allowedOrigins = process.env.CORS_ORIGIN?.split(',') ?? ['*']
 app.use(cors({ origin: allowedOrigins }))
 app.use(express.json({ limit: '1mb' }))
 app.use(morgan('dev'))
+app.use(reviewRequests)
 
 /* ---------------------------------
    Supabase Clients & Config
