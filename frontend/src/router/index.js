@@ -1,12 +1,12 @@
+// src/router/index.ts
 import { createRouter, createWebHistory } from 'vue-router'
-import AgentProfile from '../views/AgentProfile.vue'
-
-const routes = [
-  { path: '/', redirect: '/agent' },
-  { path: '/agent', name: 'AgentProfile', component: AgentProfile }
-]
+import Dashboard from '@/pages/Dashboard.vue'
+import NewRequest from '@/pages/NewRequest.vue' // build next
 
 export default createRouter({
   history: createWebHistory(),
-  routes
+  routes: [
+    { path: '/', name: 'dashboard', component: Dashboard },
+    { path: '/requests/new', name: 'request-new', component: NewRequest }
+  ]
 })
