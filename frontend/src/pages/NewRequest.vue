@@ -1,10 +1,9 @@
-<!-- src/pages/NewRequest.vue -->
 <script setup lang="ts">
 import { ref } from 'vue'
 import { supabase } from '@/lib/supabase'
 import { useRouter } from 'vue-router'
-const router = useRouter()
 
+const router = useRouter()
 const form = ref({ client_name: '', client_email: '', platform: 'google' })
 const platforms = ['google','facebook','zillow','realtor','internal']
 const loading = ref(false)
@@ -16,14 +15,17 @@ async function submit() {
   try {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) throw new Error('Not authenticated')
+
     const { error: insErr } = await supabase.from('review_requests').insert({
       agent_id: user.id,
       client_name: form.value.client_name,
       client_email: form.value.client_email,
-      platform: form.value.platform,
+      platform: form.value.platform,   // must match allowed platforms
+      channel: 'email',                // 👈 add this field
       status: 'sent'
     })
     if (insErr) throw insErr
+
     router.push({ name: 'dashboard' })
   } catch (e:any) {
     error.value = e.message ?? 'Failed to create request'
@@ -32,7 +34,6 @@ async function submit() {
   }
 }
 </script>
-
 <template>
   <main class="p-6 max-w-xl mx-auto space-y-4">
     <h1 class="text-2xl font-semibold">Send Review Request</h1>
