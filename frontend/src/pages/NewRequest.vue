@@ -4,15 +4,31 @@ import { supabase } from '@/lib/supabase'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
-const form = ref({ client_name: '', client_email: '', platform: 'google' })
-const platforms = ['google','facebook','zillow','realtor','internal']
+const platforms = ['google','facebook','zillow','realtor','internal'] as const
+
+const form = ref({
+  client_name: '',
+  client_email: '',
+  platform: platforms[0]
+})
+
 const loading = ref(false)
 const error = ref<string|null>(null)
+
+function sanitize() {
+  form.value.client_name = form.value.client_name.trim()
+  form.value.client_email = form.value.client_email.trim().toLowerCase()
+  // ensure platform matches DB check constraint exactly
+  if (!platforms.includes(form.value.platform as any)) {
+    form.value.platform = platforms[0]
+  }
+}
 
 async function submit() {
   loading.value = true
   error.value = null
   try {
+    sanitize()
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) throw new Error('Not authenticated')
 
@@ -20,9 +36,9 @@ async function submit() {
       agent_id: user.id,
       client_name: form.value.client_name,
       client_email: form.value.client_email,
-      platform: form.value.platform,   // must match allowed platforms
-      channel: 'email',                // 👈 add this field
-      status: 'sent'
+      platform: form.value.platform, // must match allowed platforms
+      channel: 'email',               // keep or change to 'sms'/'link' as needed
+      status: 'pending'               // ✅ aligns with current DB status check
     })
     if (insErr) throw insErr
 
@@ -34,6 +50,7 @@ async function submit() {
   }
 }
 </script>
+
 <template>
   <main class="p-6 max-w-xl mx-auto space-y-4">
     <h1 class="text-2xl font-semibold">Send Review Request</h1>
