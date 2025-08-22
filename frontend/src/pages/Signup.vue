@@ -1,51 +1,59 @@
 <script setup lang="ts">
+import { ref } from 'vue'
+import { useAuth } from '@/composables/useAuth'
 import { useRouter } from 'vue-router'
-import { useToast } from 'primevue/usetoast'
-import { supabase } from '../supabase'
-import { useForm } from 'vee-validate'
-import * as yup from 'yup'
 
-const toast = useToast()
 const router = useRouter()
+const { signUp, loading, error } = useAuth()
+const email = ref('')
+thePassword: const password = ref('')
+const confirm = ref('')
+const creating = ref(false)
 
-const { handleSubmit, errors, values, meta } = useForm({
-  validationSchema: yup.object({
-    email: yup.string().email().required(),
-    password: yup.string().min(8).required()
-  }),
-  initialValues: { email: '', password: '' }
-})
-
-const onSubmit = handleSubmit(async (vals) => {
-  const { data, error } = await supabase.auth.signUp({
-    email: vals.email, password: vals.password
-  })
-  if (error) return toast.add({ severity:'error', summary:'Signup failed', detail:error.message })
-  toast.add({ severity:'success', summary:'Check your email', detail:'Confirm to continue' })
-  router.push('/login')
-})
+async function submit() {
+  if (!email.value || !password.value || password.value !== confirm.value) {
+    alert('Please provide matching passwords.')
+    return
+  }
+  creating.value = true
+  try {
+    await signUp(email.value.trim().toLowerCase(), password.value)
+    alert('Account created. Please sign in.')
+    router.replace({ name: 'login' })
+  } catch (_) {
+    /* error shown below */
+  } finally {
+    creating.value = false
+  }
+}
 </script>
 
 <template>
-  <div class="grid justify-content-center">
-    <PCard class="w-full sm:w-10 md:w-6 lg:w-4">
-      <template #title> Create your account </template>
-      <form class="p-fluid grid gap-3" @submit.prevent="onSubmit">
-        <div>
-          <label>Email</label>
-          <PInputText v-model="values.email" type="email" autocomplete="email" />
-          <small class="p-error">{{ errors.email }}</small>
-        </div>
-        <div>
-          <label>Password</label>
-          <PPassword v-model="values.password" toggleMask :feedback="false" />
-          <small class="p-error">{{ errors.password }}</small>
-        </div>
-        <PButton type="submit" label="Create account" :disabled="!meta.valid" />
-      </form>
-      <template #footer>
-        <small>Already have an account? <a href="/login">Log in</a></small>
-      </template>
-    </PCard>
-  </div>
+  <main class="max-w-md mx-auto p-6 space-y-6">
+    <h1 class="text-2xl font-semibold">Create account</h1>
+
+    <form class="space-y-3" @submit.prevent="submit">
+      <div>
+        <label class="block text-sm mb-1" for="email">Email</label>
+        <input id="email" v-model="email" type="email" required class="border rounded p-2 w-full" />
+      </div>
+
+      <div>
+        <label class="block text-sm mb-1" for="password">Password</label>
+        <input id="password" v-model="password" type="password" minlength="6" required class="border rounded p-2 w-full" />
+      </div>
+
+      <div>
+        <label class="block text-sm mb-1" for="confirm">Confirm password</label>
+        <input id="confirm" v-model="confirm" type="password" minlength="6" required class="border rounded p-2 w-full" />
+      </div>
+
+      <button class="w-full px-4 py-2 bg-black text-white rounded" :disabled="creating || loading">
+        {{ creating ? 'Creating…' : 'Sign up' }}
+      </button>
+
+      <p v-if="error" class="text-red-600">{{ error }}</p>
+      <RouterLink class="text-sm underline" :to="{ name: 'login' }">Already have an account? Log in</RouterLink>
+    </form>
+  </main>
 </template>
