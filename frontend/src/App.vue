@@ -1,4 +1,8 @@
 <template>
+  <nav style="padding:12px; border-bottom:1px solid #eee">
+    <a href="/">Dashboard</a> |
+    <a href="/requests/new">New Request</a>
+  </nav>
   <router-view />
 </template>
 
