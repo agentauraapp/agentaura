@@ -1,16 +1,29 @@
-import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
+import { createRouter, createWebHistory } from 'vue-router'
+import { supabase } from '@/lib/supabase'
 
-const Dashboard  = () => import('@/pages/Dashboard.vue')
+const Dashboard = () => import('@/pages/Dashboard.vue')
 const NewRequest = () => import('@/pages/NewRequest.vue')
+const Login = () => import('@/pages/Login.vue')
+const Signup = () => import('@/pages/Signup.vue')
 
-const routes: RouteRecordRaw[] = [
-  { path: '/', name: 'dashboard', component: Dashboard },
-  { path: '/requests/new', name: 'request-new', component: NewRequest },
-  // optional: helpful 404 to avoid a totally blank page on bad paths
-  { path: '/:pathMatch(.*)*', component: { template: '<div style="padding:24px">Not found</div>' } }
-]
-
-export default createRouter({
+const router = createRouter({
   history: createWebHistory(),
-  routes,
+  routes: [
+    { path: '/login', name: 'login', component: Login },
+    { path: '/signup', name: 'signup', component: Signup },
+    { path: '/', name: 'dashboard', component: Dashboard, meta: { requiresAuth: true } },
+    { path: '/requests/new', name: 'request-new', component: NewRequest, meta: { requiresAuth: true } },
+    { path: '/:pathMatch(.*)*', redirect: '/' }
+  ]
 })
+
+router.beforeEach(async (to) => {
+  if (!to.meta.requiresAuth) return true
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session) {
+    return { name: 'login', query: { redirect: to.fullPath } }
+  }
+  return true
+})
+
+export default router
