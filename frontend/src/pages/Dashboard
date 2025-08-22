@@ -1,0 +1,57 @@
+<!-- src/pages/Dashboard.vue -->
+<script setup lang="ts">
+import { onMounted, computed } from 'vue'
+import { useDashboardStore } from '@/stores/useDashboardStore'
+import Card from 'primevue/card'
+import DataTable from 'primevue/datatable'
+import Column from 'primevue/column'
+import Button from 'primevue/button'
+import Chart from 'primevue/chart'
+
+const store = useDashboardStore()
+onMounted(() => store.load())
+
+const chartData = computed(() => ({
+  labels: store.kpis.timeseries.map(p => new Date(p.day).toLocaleDateString()),
+  datasets: [
+    { label: 'Reviews per day (14d)', data: store.kpis.timeseries.map(p => p.count) }
+  ]
+}))
+</script>
+
+<template>
+  <div class="grid gap-4 p-4">
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <Card><template #title>Pending</template><div class="text-3xl">{{ store.kpis.pending }}</div></Card>
+      <Card><template #title>Delivered</template><div class="text-3xl">{{ store.kpis.delivered }}</div></Card>
+      <Card><template #title>Completed</template><div class="text-3xl">{{ store.kpis.completed }}</div></Card>
+      <Card><template #title>Conversion</template><div class="text-3xl">{{ (store.kpis.conversion*100).toFixed(0) }}%</div></Card>
+    </div>
+
+    <Card>
+      <template #title>Reviews per day (last 14 days)</template>
+      <Chart type="line" :data="chartData" />
+    </Card>
+
+    <div class="flex justify-between items-center">
+      <h2 class="text-xl font-semibold">Recent Activity</h2>
+      <Button label="Send Review Request" icon="pi pi-send" @click="$router.push({ name: 'request-new' })" />
+    </div>
+
+    <Card>
+      <DataTable :value="store.recent" :loading="store.loading" dataKey="id" responsiveLayout="scroll">
+        <Column field="client_name" header="Client" />
+        <Column field="client_email" header="Email" />
+        <Column field="platform" header="Platform" />
+        <Column field="status" header="Status" />
+        <Column field="created_at" header="Created"
+                :body="row => new Date(row.created_at).toLocaleString()" />
+      </DataTable>
+      <div v-if="store.error" class="text-red-600 mt-2">{{ store.error }}</div>
+    </Card>
+  </div>
+</template>
+
+<style scoped>
+/* minimal tweaks if you’re also using Tailwind/PrimeFlex */
+</style>
