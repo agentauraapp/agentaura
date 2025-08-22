@@ -13,4 +13,4 @@ services:
     rootDir: backend
     nodeVersion: 22.16.0
     buildCommand: npm ci
-    startCommand: node server.js
+    startCommand: node src/server.js
