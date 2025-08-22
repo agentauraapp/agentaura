@@ -1,6 +1,6 @@
 // backend/server.js
 import 'dotenv/config'
-import reviewRequests from './routes/reviewRequests.js'
+import reviewRequests from '../routes/reviewRequests.js'
 import express from 'express'
 import cors from 'cors'
 import morgan from 'morgan'
