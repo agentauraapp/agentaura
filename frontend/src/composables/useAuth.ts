@@ -1,9 +1,8 @@
+// composables/useAuth.ts
 import { ref, onMounted } from 'vue'
 import { supabase } from '@/lib/supabase'
 
-type MaybeUser = Awaited<ReturnType<typeof supabase.auth.getUser>>['data']['user']
-
-const userRef = ref<MaybeUser>(null)
+const userRef = ref<any>(null)
 const loadingRef = ref(true)
 const errorRef = ref<string | null>(null)
 
@@ -12,85 +11,84 @@ export function useAuth() {
   const loading = loadingRef
   const error = errorRef
 
+  async function hardSignOut() {
+    try { await supabase.auth.signOut() } catch {}
+    user.value = null
+  }
+
   async function refresh() {
     loading.value = true
-    const { data, error: err } = await supabase.auth.getUser()
-    if (err) {
-      error.value = err.message
+    error.value = null
+
+    // First just check if we even have a session
+    const { data: { session }, error: sErr } = await supabase.auth.getSession()
+    if (sErr) {
+      error.value = sErr.message
+      loading.value = false
+      return
+    }
+    if (!session) {
       user.value = null
+      loading.value = false
+      return
+    }
+
+    // Then fetch the user; handle the “sub claim” error by clearing the stale token
+    const { data, error: uErr } = await supabase.auth.getUser()
+    if (uErr) {
+      const msg = (uErr.message || '').toLowerCase()
+      if (msg.includes('sub claim') || msg.includes('does not exist')) {
+        await hardSignOut()
+      } else {
+        error.value = uErr.message
+      }
     } else {
       user.value = data.user
     }
     loading.value = false
   }
 
-  function asCleanString(v: unknown): string {
-    // Avoid passing refs/objects down to GoTrue by accident
-    return String(v ?? '').trim()
-  }
-
-  async function signUp(email: unknown, password: unknown) {
+  async function signUp(email: string, password: string) {
     error.value = null
-    const e = asCleanString(email).toLowerCase()
-    const p = asCleanString(password)
-
-    if (!e || !p) {
-      const msg = 'Email and password are required.'
-      error.value = msg
-      throw new Error(msg)
-    }
-
-    // Sanity log (remove if noisy)
-    // console.debug('signUp payload', { emailType: typeof e, passwordType: typeof p })
-
+    // You can include a redirect URL if you use email confirmations
     const { error: err } = await supabase.auth.signUp({
-      email: e,
-      password: p,
-      options: {
-        // send the email confirmation link back to your app
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
-      },
+      email,
+      password,
+      options: { emailRedirectTo: `${window.location.origin}/login` }
     })
-
-    if (err) {
-      error.value = err.message
-      throw err
-    }
-  }
-
-  async function signIn(email: unknown, password: unknown) {
-    error.value = null
-    const e = asCleanString(email).toLowerCase()
-    const p = asCleanString(password)
-
-    const { error: err } = await supabase.auth.signInWithPassword({ email: e, password: p })
     if (err) { error.value = err.message; throw err }
   }
 
-  async function resetPassword(email: unknown) {
+  async function signIn(email: string, password: string) {
     error.value = null
-    const e = asCleanString(email).toLowerCase()
-    const { error: err } = await supabase.auth.resetPasswordForEmail(e, {
+    const { error: err } = await supabase.auth.signInWithPassword({ email, password })
+    if (err) { error.value = err.message; throw err }
+  }
+
+  async function resetPassword(email: string) {
+    error.value = null
+    const { error: err } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: `${window.location.origin}/reset`
     })
     if (err) { error.value = err.message; throw err }
   }
 
-  async function updatePassword(newPassword: unknown) {
+  async function updatePassword(newPassword: string) {
     error.value = null
-    const p = asCleanString(newPassword)
-    const { error: err } = await supabase.auth.updateUser({ password: p })
+    const { error: err } = await supabase.auth.updateUser({ password: newPassword })
     if (err) { error.value = err.message; throw err }
   }
 
   async function signOut() {
-    await supabase.auth.signOut()
-    await refresh()
+    await hardSignOut()
   }
 
   onMounted(() => {
     refresh()
-    supabase.auth.onAuthStateChange((_e, _s) => refresh())
+    supabase.auth.onAuthStateChange((_event) => {
+      // Covers SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED, USER_UPDATED
+      refresh()
+    })
   })
 
   return { user, loading, error, refresh, signUp, signIn, signOut, resetPassword, updatePassword }
