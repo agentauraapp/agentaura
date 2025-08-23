@@ -1,10 +1,18 @@
-// composables/useAuth.ts
+// /src/composables/useAuth.ts
 import { ref, onMounted } from 'vue'
 import { supabase } from '@/lib/supabase'
 
-const userRef = ref<any>(null)
+type MaybeUser = Awaited<ReturnType<typeof supabase.auth.getUser>>['data']['user']
+
+const userRef = ref<MaybeUser>(null)
 const loadingRef = ref(true)
 const errorRef = ref<string | null>(null)
+
+function unwrapToString(v: any): string {
+  // Accept raw strings, numbers, Vue refs, null/undefined
+  if (v && typeof v === 'object' && 'value' in v) return String((v as any).value ?? '').trim()
+  return String(v ?? '').trim()
+}
 
 export function useAuth() {
   const user = userRef
@@ -20,7 +28,7 @@ export function useAuth() {
     loading.value = true
     error.value = null
 
-    // First just check if we even have a session
+    // Check if we even have a session
     const { data: { session }, error: sErr } = await supabase.auth.getSession()
     if (sErr) {
       error.value = sErr.message
@@ -33,7 +41,7 @@ export function useAuth() {
       return
     }
 
-    // Then fetch the user; handle the “sub claim” error by clearing the stale token
+    // Fetch the user; handle stale tokens
     const { data, error: uErr } = await supabase.auth.getUser()
     if (uErr) {
       const msg = (uErr.message || '').toLowerCase()
@@ -48,33 +56,65 @@ export function useAuth() {
     loading.value = false
   }
 
-  async function signUp(email: string, password: string) {
+  // Accepts either (email, password) or ({ email, password })
+  async function signUp(a: any, b?: any) {
     error.value = null
-    // You can include a redirect URL if you use email confirmations
+
+    let email = ''
+    let password = ''
+
+    if (typeof a === 'object' && b === undefined) {
+      email = unwrapToString(a?.email).toLowerCase()
+      password = unwrapToString(a?.password)
+    } else {
+      email = unwrapToString(a).toLowerCase()
+      password = unwrapToString(b)
+    }
+
+    if (!email || !password) {
+      const msg = 'Email and password are required.'
+      error.value = msg
+      throw new Error(msg)
+    }
+
     const { error: err } = await supabase.auth.signUp({
       email,
       password,
-      options: { emailRedirectTo: `${window.location.origin}/login` }
+      options: { emailRedirectTo: `${window.location.origin}/login` },
     })
     if (err) { error.value = err.message; throw err }
   }
 
-  async function signIn(email: string, password: string) {
+  async function signIn(a: any, b?: any) {
     error.value = null
+
+    let email = ''
+    let password = ''
+
+    if (typeof a === 'object' && b === undefined) {
+      email = unwrapToString(a?.email).toLowerCase()
+      password = unwrapToString(a?.password)
+    } else {
+      email = unwrapToString(a).toLowerCase()
+      password = unwrapToString(b)
+    }
+
     const { error: err } = await supabase.auth.signInWithPassword({ email, password })
     if (err) { error.value = err.message; throw err }
   }
 
-  async function resetPassword(email: string) {
+  async function resetPassword(v: any) {
     error.value = null
+    const email = unwrapToString(v).toLowerCase()
     const { error: err } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/reset`
+      redirectTo: `${window.location.origin}/reset`,
     })
     if (err) { error.value = err.message; throw err }
   }
 
-  async function updatePassword(newPassword: string) {
+  async function updatePassword(v: any) {
     error.value = null
+    const newPassword = unwrapToString(v)
     const { error: err } = await supabase.auth.updateUser({ password: newPassword })
     if (err) { error.value = err.message; throw err }
   }
@@ -85,10 +125,7 @@ export function useAuth() {
 
   onMounted(() => {
     refresh()
-    supabase.auth.onAuthStateChange((_event) => {
-      // Covers SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED, USER_UPDATED
-      refresh()
-    })
+    supabase.auth.onAuthStateChange(() => refresh())
   })
 
   return { user, loading, error, refresh, signUp, signIn, signOut, resetPassword, updatePassword }
