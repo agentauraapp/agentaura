@@ -367,6 +367,40 @@ app.get('/api/debug/send-test', async (req, res) => {
   }
 })
 
+// Optional: set a shared token so randos can't spam your test endpoint
+const TEST_EMAIL_TOKEN = process.env.RESEND_TEST_TOKEN || 'dev-token';
+
+// GET /api/dev/test-email?to=you@example.com&token=dev-token
+app.get('/api/dev/test-email', async (req, res) => {
+  try {
+    const { to, token } = req.query || {};
+    if (!to)    return res.status(400).json({ error: 'missing "to"' });
+    if (token !== TEST_EMAIL_TOKEN) {
+      return res.status(403).json({ error: 'bad token' });
+    }
+
+    // Reuse same function the app uses
+    const { sendReviewRequestEmail } = await import('./services/email.js');
+    const base = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const dummyLink = `${base}/magic-submit?a=test&t=demo`;
+
+    const result = await sendReviewRequestEmail({
+      to: String(to),
+      agentDisplayName: 'Agent Aura Test',
+      clientName: 'Friend',
+      magicLinkUrl: dummyLink,
+      subject: 'Agent Aura test email',
+      bodyTemplate: `<p>This is a test email from Agent Aura.</p><p>Link: <a href="${dummyLink}">${dummyLink}</a></p>`,
+    });
+
+    console.log('[TEST EMAIL] queued', result);
+    res.json({ ok: true, result });
+  } catch (e) {
+    console.error('[TEST EMAIL] error', e);
+    res.status(500).json({ ok: false, error: e.message || 'send_failed' });
+  }
+});
+
 
 /* ---------- 404 ---------- */
 app.use((_req, res) => res.status(404).json({ error: 'Route not found' }))
