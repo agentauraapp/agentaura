@@ -401,6 +401,31 @@ app.get('/api/dev/test-email', async (req, res) => {
   }
 });
 
+// --- Test email route (GET so you can hit it in a browser) ---
+app.get('/api/test-email', async (_req, res) => {
+  try {
+    const { sendReviewRequestEmail } = await import('./services/email.js');
+
+    const magicLinkUrl =
+      (process.env.FRONTEND_URL || 'https://agentaura.onrender.com') +
+      '/magic-submit?a=demo&t=demo';
+
+    const result = await sendReviewRequestEmail({
+      to: process.env.TEST_EMAIL_TO || 'you@example.com', // set in Render env for convenience
+      agentDisplayName: 'Agent Aura Demo',
+      clientName: 'Friend',
+      magicLinkUrl,
+      subject: 'Test email from Agent Aura (Resend)',
+      bodyTemplate: `<p>This is a test. Click your magic link:</p><p><a href="${magicLinkUrl}">Open</a></p>`,
+    });
+
+    res.json({ ok: true, result });
+  } catch (e) {
+    console.error('/api/test-email error', e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 
 /* ---------- 404 ---------- */
 app.use((_req, res) => res.status(404).json({ error: 'Route not found' }))
