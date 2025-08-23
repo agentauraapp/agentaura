@@ -4,23 +4,30 @@ import { useAuth } from '@/composables/useAuth'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
-const { signUp, loading, error } = useAuth()
-
+const { signUp, loading, error } = useAuth() // assuming composable exposes these
 const email = ref('')
 const password = ref('')
 const confirm = ref('')
 const creating = ref(false)
+const localError = ref<string | null>(null)
 
 async function submit() {
+  localError.value = null
   if (!email.value || !password.value || password.value !== confirm.value) {
-    alert('Please provide matching passwords.')
+    localError.value = 'Please provide matching passwords.'
     return
   }
   creating.value = true
   try {
-    await signUp(email.value.trim().toLowerCase(), password.value)
+    // IMPORTANT: make sure the signature matches your composable:
+    // Many implementations expect an object, not (email, password)
+    await signUp({ email: email.value.trim().toLowerCase(), password: password.value })
     alert('Account created. Please sign in.')
     router.replace({ name: 'login' })
+  } catch (e: any) {
+    // surface the failure
+    localError.value = e?.message ?? String(e)
+    console.error('signUp failed:', e)
   } finally {
     creating.value = false
   }
@@ -47,12 +54,22 @@ async function submit() {
         <input id="confirm" v-model="confirm" type="password" minlength="6" required class="border rounded p-2 w-full" />
       </div>
 
-      <button class="w-full px-4 py-2 bg-black text-white rounded" :disabled="creating || loading">
-        {{ creating ? 'Creating…' : 'Sign up' }}
+      <button
+        type="submit"
+        class="w-full px-4 py-2 bg-black text-white rounded disabled:opacity-60"
+        :disabled="creating || loading"
+        @click.prevent="submit"
+      >
+        {{ (creating || loading) ? 'Creating…' : 'Sign up' }}
       </button>
 
-      <p v-if="error" class="text-red-600">{{ error }}</p>
-      <RouterLink class="text-sm underline" :to="{ name: 'login' }">Already have an account? Log in</RouterLink>
+      <!-- show either the composable error or localError -->
+      <p v-if="localError" class="text-red-600">{{ localError }}</p>
+      <p v-else-if="error" class="text-red-600">{{ error }}</p>
+
+      <RouterLink class="text-sm underline" :to="{ name: 'login' }">
+        Already have an account? Log in
+      </RouterLink>
     </form>
   </main>
 </template>
