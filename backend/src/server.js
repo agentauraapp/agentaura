@@ -342,6 +342,32 @@ app.get('/api/reviews', requireAuth, async (req, res) => {
   }
 })
 
+// --- DEBUG: send a test email quickly ---
+app.get('/api/debug/send-test', async (req, res) => {
+  try {
+    const to = String(req.query.to || '').trim()
+    if (!to) return res.status(400).json({ error: 'Provide ?to=email@example.com' })
+
+    // import your email sender (make sure it actually sends via a provider)
+    const { sendReviewRequestEmail } = await import('./services/email.js')
+
+    await sendReviewRequestEmail({
+      to,
+      agentDisplayName: 'Agent Aura',
+      clientName: 'Friend',
+      magicLinkUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/magic-submit?a=test&t=dev`,
+      subject: 'Agent Aura – Test Email',
+      bodyTemplate: 'This is a test from the /api/debug/send-test route.'
+    })
+
+    res.json({ ok: true, to })
+  } catch (e) {
+    console.error('send-test error:', e)
+    res.status(500).json({ ok: false, error: e?.message || 'send_failed' })
+  }
+})
+
+
 /* ---------- 404 ---------- */
 app.use((_req, res) => res.status(404).json({ error: 'Route not found' }))
 
