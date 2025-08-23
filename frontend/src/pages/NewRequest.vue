@@ -18,7 +18,6 @@ const error = ref<string|null>(null)
 function sanitize() {
   form.value.client_name = form.value.client_name.trim()
   form.value.client_email = form.value.client_email.trim().toLowerCase()
-  // ensure platform matches DB check constraint exactly
   if (!platforms.includes(form.value.platform as any)) {
     form.value.platform = platforms[0]
   }
@@ -32,13 +31,13 @@ async function submit() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) throw new Error('Not authenticated')
 
+    // 👇 Do NOT send agent_id; DB sets it via default auth.uid()
     const { error: insErr } = await supabase.from('review_requests').insert({
-      agent_id: user.id,
       client_name: form.value.client_name,
       client_email: form.value.client_email,
-      platform: form.value.platform, // must match allowed platforms
-      channel: 'email',               // keep or change to 'sms'/'link' as needed
-      status: 'pending'               // ✅ aligns with current DB status check
+      platform: form.value.platform,
+      channel: 'email',
+      status: 'pending'
     })
     if (insErr) throw insErr
 
