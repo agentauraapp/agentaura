@@ -9,9 +9,44 @@ const loadingRef = ref(true)
 const errorRef = ref<string | null>(null)
 
 function unwrapToString(v: any): string {
-  // Accept raw strings, numbers, Vue refs, null/undefined
   if (v && typeof v === 'object' && 'value' in v) return String((v as any).value ?? '').trim()
   return String(v ?? '').trim()
+}
+
+/**
+ * Ensure an 'agents' row exists for the current authenticated user.
+ * Assumes schema: agents.id == auth.users.id (UUID PK).
+ * If your schema uses agents.user_id instead, switch the payload accordingly.
+ */
+async function ensureAgentForCurrentUser() {
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return
+
+  // Try a lightweight existence check first
+  const { data: existing, error: selErr } = await supabase
+    .from('agents')
+    .select('id')
+    .eq('id', user.id) // change to .eq('user_id', user.id) if your schema uses user_id
+    .maybeSingle()
+
+  if (selErr) {
+    // If RLS blocks select, we can still try an upsert; just log and continue.
+    // console.warn('agents existence check failed:', selErr.message)
+  }
+  if (existing?.id) return
+
+  // Upsert agent row; if your table defines a UNIQUE constraint on id, onConflict:'id' is fine.
+  // If you use user_id, set payload to { user_id: user.id, display_name: user.email } and onConflict:'user_id'.
+  const payload = { id: user.id, display_name: user.email ?? null }
+  const { error: upErr } = await supabase
+    .from('agents')
+    .upsert(payload, { onConflict: 'id' })
+
+  if (upErr) {
+    // Surface but do not crash the app; backend FK will fail later if this doesn't exist.
+    // You might add user guidance or telemetry here.
+    // console.error('Failed to provision agent row:', upErr.message)
+  }
 }
 
 export function useAuth() {
@@ -28,7 +63,6 @@ export function useAuth() {
     loading.value = true
     error.value = null
 
-    // Check if we even have a session
     const { data: { session }, error: sErr } = await supabase.auth.getSession()
     if (sErr) {
       error.value = sErr.message
@@ -41,7 +75,6 @@ export function useAuth() {
       return
     }
 
-    // Fetch the user; handle stale tokens
     const { data, error: uErr } = await supabase.auth.getUser()
     if (uErr) {
       const msg = (uErr.message || '').toLowerCase()
@@ -52,6 +85,8 @@ export function useAuth() {
       }
     } else {
       user.value = data.user
+      // Keep agents row in sync whenever we refresh with a valid user.
+      ensureAgentForCurrentUser()
     }
     loading.value = false
   }
@@ -59,9 +94,7 @@ export function useAuth() {
   // Accepts either (email, password) or ({ email, password })
   async function signUp(a: any, b?: any) {
     error.value = null
-
-    let email = ''
-    let password = ''
+    let email = '', password = ''
 
     if (typeof a === 'object' && b === undefined) {
       email = unwrapToString(a?.email).toLowerCase()
@@ -77,19 +110,21 @@ export function useAuth() {
       throw new Error(msg)
     }
 
-    const { error: err } = await supabase.auth.signUp({
+    const { data, error: err } = await supabase.auth.signUp({
       email,
       password,
       options: { emailRedirectTo: `${window.location.origin}/login` },
     })
     if (err) { error.value = err.message; throw err }
+
+    // If email confirmations are disabled (or returns a session), provision now.
+    // If confirmations are enabled, this will be a no-op (no session yet); we'll provision on first sign-in / refresh.
+    if (data.session) await ensureAgentForCurrentUser()
   }
 
   async function signIn(a: any, b?: any) {
     error.value = null
-
-    let email = ''
-    let password = ''
+    let email = '', password = ''
 
     if (typeof a === 'object' && b === undefined) {
       email = unwrapToString(a?.email).toLowerCase()
@@ -101,6 +136,9 @@ export function useAuth() {
 
     const { error: err } = await supabase.auth.signInWithPassword({ email, password })
     if (err) { error.value = err.message; throw err }
+
+    // After a successful sign-in we definitely have a session; provision agent row now.
+    await ensureAgentForCurrentUser()
   }
 
   async function resetPassword(v: any) {
