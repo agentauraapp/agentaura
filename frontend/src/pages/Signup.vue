@@ -54,14 +54,10 @@ async function submit() {
         <input id="confirm" v-model="confirm" type="password" minlength="6" required class="border rounded p-2 w-full" />
       </div>
 
-      <button
-        type="submit"
-        class="w-full px-4 py-2 bg-black text-white rounded disabled:opacity-60"
-        :disabled="creating || loading"
-        @click.prevent="submit"
-      >
-        {{ (creating || loading) ? 'Creating…' : 'Sign up' }}
-      </button>
+      <button type="submit" class="w-full px-4 py-2 bg-black text-white rounded"
+        :disabled="creating || loading">
+  {{ creating ? 'Creating…' : 'Sign up' }}
+</button>
 
       <!-- show either the composable error or localError -->
       <p v-if="localError" class="text-red-600">{{ localError }}</p>
