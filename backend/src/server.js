@@ -426,6 +426,28 @@ app.get('/api/test-email', async (_req, res) => {
   }
 });
 
+// backend/src/server.js (near other routes)
+app.get('/api/debug/send', async (req, res) => {
+  try {
+    const to = req.query.to;
+    if (!to) return res.status(400).json({ ok: false, error: 'missing ?to=' });
+
+    const { sendReviewRequestEmail } = await import('./services/email.js');
+    const result = await sendReviewRequestEmail({
+      to,
+      agentDisplayName: 'Debug Agent',
+      clientName: 'Friend',
+      magicLinkUrl: 'https://agentaura.onrender.com/magic-submit?a=demo&t=demo',
+      subject: 'Debug email from Agent Aura',
+      bodyTemplate: '<p>It works! 🎉</p>'
+    });
+
+    res.json({ ok: true, result });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message });
+  }
+});
+
 
 /* ---------- 404 ---------- */
 app.use((_req, res) => res.status(404).json({ error: 'Route not found' }))
