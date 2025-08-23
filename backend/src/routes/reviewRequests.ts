@@ -22,11 +22,8 @@ async function getAgentByUserId(userId: string) {
   const { data, error } = await supabaseAdmin
     .from('agents')
     .select('id, display_name')
-    .eq('id', userId)        // NOTE: If your agents.id equals auth.users.id
+    .eq('id', userId)        // If your agents table uses user_id, change to .eq('user_id', userId)
     .maybeSingle();
-
-  // If your "agents" table stores user_id instead, switch to:
-  // .eq('user_id', userId)
 
   if (error) throw error;
   if (!data) {
@@ -47,7 +44,10 @@ async function getHandleForAgent(agentId: string) {
   return data?.handle ?? agentId; // fallback to UUID
 }
 
-async function upsertClient(agent_id: string, client: { name?: string; email?: string; phone?: string; }) {
+async function upsertClient(
+  agent_id: string,
+  client: { name?: string; email?: string; phone?: string; }
+) {
   if (!client?.email && !client?.phone) throw new Error('Client email or phone required');
 
   // Match precedence: email first, else phone
@@ -122,20 +122,37 @@ router.post('/api/review-requests', async (req: any, res, next) => {
     const magic_link_url =
       `${base}/magic-submit?a=${encodeURIComponent(agentHandle)}&t=${data!.magic_link_token}`;
 
-    // Attempt to send email if requested
+    // Attempt to send email if requested, with robust logging and response surface
+    let emailResult: any = null;
+    let emailError: string | null = null;
+
     if (channel === 'email' && client.email) {
-      const { sendReviewRequestEmail } = await import('../services/email.js'); // dynamic import to avoid top-level cycle
-      await sendReviewRequestEmail({
-        to: client.email,
-        agentDisplayName: agent.display_name || 'your agent',
-        clientName: client.name,
-        magicLinkUrl: magic_link_url,
-        subject,
-        bodyTemplate: body_template,
-      });
+      try {
+        const { sendReviewRequestEmail } = await import('../services/email.js'); // keep .js for runtime ESM
+        emailResult = await sendReviewRequestEmail({
+          to: client.email,
+          agentDisplayName: agent.display_name || 'your agent',
+          clientName: client.name,
+          magicLinkUrl: magic_link_url,
+          subject,
+          bodyTemplate: body_template,
+        });
+        console.log('[email] sent', { to: client.email, id: emailResult?.id });
+      } catch (e: any) {
+        emailError = (e && e.message) ? String(e.message) : String(e);
+        console.error('[email] failed', { to: client.email, error: emailError });
+      }
     }
 
-    res.status(201).json({ id: data!.id, magic_link_url });
+    res.status(201).json({
+      id: data!.id,
+      magic_link_url,
+      email: {
+        ok: !emailError,
+        id: emailResult?.id ?? null,
+        error: emailError,
+      },
+    });
   } catch (err) {
     next(err);
   }
