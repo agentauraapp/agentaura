@@ -186,7 +186,7 @@ router.post('/api/review-requests', attachUser, async (req, res, next) => {
     const agentHandle = await getHandleForAgent(agent.id)
     const base = process.env.FRONTEND_URL || 'http://localhost:5173'
     const magic_link_url =
-      `${base}/magic-submit?a=${encodeURIComponent(agentHandle)}&t=${data.magic_link_token}`
+  `${base}/magic-submit?rid=${data.id}&a=${encodeURIComponent(agentHandle)}&t=${data.magic_link_token}`
 
     // email send (best-effort)
     let emailResult = null
