@@ -1,15 +1,18 @@
-// backend/src/services/email.js
+// backend/services/email.js
 import { Resend } from 'resend';
 
-const HAS_API_KEY = !!process.env.RESEND_API_KEY;
-const resend = HAS_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+const haveKey = !!process.env.RESEND_API_KEY;
+let resend = null;
 
-const FROM = process.env.EMAIL_FROM || 'onboarding@resend.dev';
+try {
+  if (haveKey) {
+    resend = new Resend(process.env.RESEND_API_KEY);
+  }
+} catch (e) {
+  // If the SDK import/construct fails, we’ll log it and still simulate.
+  console.error('[email] Failed to init Resend SDK:', e);
+}
 
-/**
- * Send a review request email. If RESEND_API_KEY is missing,
- * we log a simulated send so you still get useful info in logs.
- */
 export async function sendReviewRequestEmail({
   to,
   agentDisplayName,
@@ -18,6 +21,7 @@ export async function sendReviewRequestEmail({
   subject,
   bodyTemplate,
 }) {
+  const from = process.env.EMAIL_FROM || 'onboarding@resend.dev';
   const finalSubject = subject || `Quick review for ${agentDisplayName ?? 'your agent'}`;
   const html =
     bodyTemplate ??
@@ -28,46 +32,30 @@ export async function sendReviewRequestEmail({
       <p>Thank you, ${agentDisplayName || 'Your Agent'}</p>
     `;
 
-  // Always log inputs so you can verify what’s being sent
-  console.log('[email] prepare', {
-    to, from: FROM, hasApiKey: HAS_API_KEY, subject: finalSubject,
-    magicLinkUrl
+  // Always log inputs (sanitized) so we can trace from Render logs
+  console.log('[email] sendReviewRequestEmail called', {
+    to,
+    from,
+    haveKey,
+    subject: finalSubject,
+    hasHtml: !!html,
   });
 
-  if (!HAS_API_KEY || !resend) {
+  if (!haveKey || !resend) {
     const result = {
       data: { id: 'local-log', simulated: true },
-      error: null
+      error: null,
     };
-    console.warn('[email] SIMULATED SEND (missing RESEND_API_KEY)', {
-      to, from: FROM, subject: finalSubject,
-      textPreview: `Review link: ${magicLinkUrl}`,
-      htmlPreview: html,
-    });
+    console.log('[email] SIMULATED send (missing key or SDK). Result:', result);
     return result;
   }
 
   try {
-    const result = await resend.emails.send({
-      from: FROM,
-      to,
-      subject: finalSubject,
-      html,
-    });
-
-    console.log('[email] sent', {
-      to,
-      id: result?.data?.id || null,
-      error: result?.error || null
-    });
-
+    const result = await resend.emails.send({ from, to, subject: finalSubject, html });
+    console.log('[email] Resend response:', { id: result?.data?.id, error: result?.error });
     return result;
   } catch (err) {
-    console.error('[email] error', {
-      to,
-      message: err?.message,
-      stack: err?.stack
-    });
+    console.error('[email] Resend error:', err);
     throw err;
   }
 }
