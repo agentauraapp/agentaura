@@ -11,6 +11,9 @@ const supabaseAdmin = createClient(
 
 /** Build a user-scoped client that forwards the incoming JWT (RLS-friendly) */
 function supabaseFromRequest(req) {
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
+    throw new Error('Backend missing SUPABASE_URL or SUPABASE_ANON_KEY; set env vars on the backend service.')
+  }
   return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY, {
     global: { headers: { Authorization: req.headers.authorization || '' } },
     auth: { persistSession: false }
@@ -77,9 +80,8 @@ function requireAuth(req) {
 /* ------------------- Helpers ------------------- */
 
 // If you map agents 1:1 with auth.users, you may not need this.
-// Leaving it in case you keep a separate `agents` table later.
+// Here we just return the auth user id as agent id; adjust if you truly have an `agents` table
 async function getAgentByUserId(userId) {
-  // Here we just return the auth user id as agent id; adjust if you truly have an `agents` table
   return { id: userId, display_name: null }
 }
 
@@ -96,7 +98,9 @@ async function getHandleForAgent(agentId) {
 
 async function upsertClient(agent_id, client) {
   if (!client || (!client.email && !client.phone)) {
-    throw new Error('Client email or phone required')
+    const err = new Error('Client email or phone required')
+    err.status = 400
+    throw err
   }
   const matchCol = client.email ? 'email' : 'phone'
   const matchVal = client[matchCol]
@@ -147,14 +151,27 @@ router.post('/api/review-requests', attachUser, async (req, res, next) => {
       status = 'pending'
     } = req.body || {}
 
+    const allowedChannels  = ['email', 'sms', 'link']
+    const allowedPlatforms = ['google','facebook','zillow','realtor','internal']
+    const allowedStatuses  = ['pending','sent','opened','posted','failed','submitted']
+
     if (!client) {
       const err = new Error('client is required')
       err.status = 400
       throw err
     }
-    const allowedChannels = ['email', 'sms', 'link']
     if (!allowedChannels.includes(channel)) {
-      const err = new Error('invalid channel')
+      const err = new Error(`invalid channel (allowed: ${allowedChannels.join(', ')})`)
+      err.status = 400
+      throw err
+    }
+    if (platform && !allowedPlatforms.includes(platform)) {
+      const err = new Error(`invalid platform (allowed: ${allowedPlatforms.join(', ')})`)
+      err.status = 400
+      throw err
+    }
+    if (status && !allowedStatuses.includes(status)) {
+      const err = new Error(`invalid status (allowed: ${allowedStatuses.join(', ')})`)
       err.status = 400
       throw err
     }
@@ -180,13 +197,18 @@ router.post('/api/review-requests', attachUser, async (req, res, next) => {
 
     if (error) {
       const code = /violates|constraint|null value|check constraint|rls/i.test(error.message) ? 400 : 500
-      return res.status(code).json({ error: error.message })
+      return res.status(code).json({
+        error: error.message,
+        code: error.code,
+        details: error.details,
+        hint: error.hint
+      })
     }
 
     const agentHandle = await getHandleForAgent(agent.id)
     const base = process.env.FRONTEND_URL || 'http://localhost:5173'
     const magic_link_url =
-  `${base}/magic-submit?rid=${data.id}&a=${encodeURIComponent(agentHandle)}&t=${data.magic_link_token}`
+      `${base}/magic-submit?rid=${data.id}&a=${encodeURIComponent(agentHandle)}&t=${data.magic_link_token}`
 
     // email send (best-effort)
     let emailResult = null
@@ -248,9 +270,6 @@ router.get('/api/review-requests', attachUser, async (req, res, next) => {
       `)
       .order('created_at', { ascending: false })
       .limit(Math.min(Number(limit) || 50, 100))
-
-    // If your RLS already restricts by auth.uid() on agent_id you don't need eq('agent_id', ...).
-    // Leaving it out to avoid leaking if policy is misconfigured.
 
     if (status) query = query.eq('status', status)
 
@@ -345,6 +364,16 @@ router.post('/api/review-requests/:id/submitted', attachSupabaseOnly, async (req
   } catch (err) {
     next(err)
   }
+})
+
+/* ------------------- Router-level error handler ------------------- */
+router.use((err, _req, res, _next) => {
+  const code = err.status || (/violates|constraint|null value|check constraint|rls/i.test(err.message) ? 400 : 500)
+  console.error('[reviewRequests]', { code, message: err.message, stack: err.stack })
+  return res.status(code).json({
+    error: err.message || 'Internal error',
+    code
+  })
 })
 
 console.log('✔ routes/reviewRequests loaded')
