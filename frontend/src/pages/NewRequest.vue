@@ -4,74 +4,87 @@ import { supabase } from '@/lib/supabase'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
-const platforms = ['google','facebook','zillow','realtor','internal'] as const
 
+// If you have VITE_BACKEND_URL in your frontend env, it will be used.
+// Otherwise we fall back to your Render backend URL.
+const API_BASE =
+  (import.meta as any).env?.VITE_BACKEND_URL ||
+  'https://agentaura-backend.onrender.com'
+
+// Simple form model
 const form = ref({
   client_name: '',
   client_email: '',
-  platform: platforms[0],
-  // optional extras if you want to customize the email:
+  platform: 'internal',   // not used by backend email flow, but keep if you want later
   subject: '',
-  body_template: ''
+  body_template: '',
+  draft_text: ''
 })
 
 const loading = ref(false)
-const error = ref<string|null>(null)
+const error = ref<string | null>(null)
+const okMsg = ref<string | null>(null)
 
 function sanitize() {
   form.value.client_name = form.value.client_name.trim()
   form.value.client_email = form.value.client_email.trim().toLowerCase()
-  if (!platforms.includes(form.value.platform as any)) {
-    form.value.platform = platforms[0]
-  }
-}
-
-function apiBase() {
-  // set this in your frontend env as VITE_API_BASE=https://agentaura-backend.onrender.com
-  return import.meta.env.VITE_API_BASE || 'http://localhost:8788'
+  form.value.subject = form.value.subject.trim()
+  form.value.body_template = form.value.body_template.trim()
+  form.value.draft_text = form.value.draft_text.trim()
 }
 
 async function submit() {
   loading.value = true
   error.value = null
+  okMsg.value = null
   try {
     sanitize()
 
+    // Get a fresh session & token
     const { data: { session }, error: sErr } = await supabase.auth.getSession()
-    if (sErr) throw sErr
+    if (sErr) throw new Error(sErr.message)
     if (!session?.access_token) throw new Error('Not authenticated')
 
-    const resp = await fetch(`${apiBase()}/api/review-requests`, {
+    // Build payload the backend expects
+    const payload = {
+      client: {
+        name: form.value.client_name,
+        email: form.value.client_email
+      },
+      channel: 'email',
+      subject: form.value.subject || undefined,
+      body_template: form.value.body_template || undefined,
+      draft_text: form.value.draft_text || undefined
+    }
+
+    const resp = await fetch(`${API_BASE}/api/review-requests`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.access_token}`,
+        'Authorization': `Bearer ${session.access_token}`
       },
-      body: JSON.stringify({
-        client: {
-          name: form.value.client_name,
-          email: form.value.client_email,
-        },
-        channel: 'email',
-        // these two are optional; your backend handles defaults
-        subject: form.value.subject || undefined,
-        body_template: form.value.body_template || undefined,
-        // optional: draft_text/platform if you want to store them
-        draft_text: null,
-      }),
+      body: JSON.stringify(payload)
     })
 
     const json = await resp.json().catch(() => ({}))
     if (!resp.ok) {
+      // Bubble up server-provided error if any
       throw new Error(json?.error || `Request failed (${resp.status})`)
     }
 
-    // Optionally inspect email send result:
-    // console.log('review-requests response:', json)
+    // Optional: show quick confirmation including email send result
+    if (json?.email?.ok) {
+      okMsg.value = 'Request created and email queued ✅'
+    } else if (json?.email && json?.email?.error) {
+      okMsg.value = 'Request created, but email did not send. Check backend logs.'
+    } else {
+      okMsg.value = 'Request created.'
+    }
 
-    router.push({ name: 'dashboard' })
+    // Redirect after a short moment
+    setTimeout(() => router.push({ name: 'dashboard' }), 500)
   } catch (e: any) {
-    error.value = e.message ?? 'Failed to send review request'
+    error.value = e?.message || 'Failed to create request'
   } finally {
     loading.value = false
   }
@@ -93,16 +106,21 @@ async function submit() {
         <input id="email" v-model="form.client_email" type="email" class="border rounded p-2 w-full" required />
       </div>
 
-      <!-- Optional subject/body controls (can remove if you don’t want them in UI) -->
       <div>
         <label class="block text-sm font-medium mb-1" for="subject">Email subject (optional)</label>
         <input id="subject" v-model="form.subject" class="border rounded p-2 w-full" placeholder="Quick review request" />
       </div>
 
       <div>
-        <label class="block text-sm font-medium mb-1" for="body">Email body (optional HTML)</label>
+        <label class="block text-sm font-medium mb-1" for="body">Email body (HTML allowed, optional)</label>
         <textarea id="body" v-model="form.body_template" class="border rounded p-2 w-full" rows="4"
-          placeholder="Leave blank to use the default template"></textarea>
+          placeholder='Hi {{name}}, please leave a quick review: {{link}}'></textarea>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium mb-1" for="draft">Internal note (optional)</label>
+        <textarea id="draft" v-model="form.draft_text" class="border rounded p-2 w-full" rows="2"
+          placeholder="Internal note..."></textarea>
       </div>
 
       <button :disabled="loading" class="px-4 py-2 rounded bg-black text-white w-full">
@@ -111,5 +129,6 @@ async function submit() {
     </form>
 
     <p v-if="error" class="text-red-600">{{ error }}</p>
+    <p v-if="okMsg" class="text-green-700">{{ okMsg }}</p>
   </main>
 </template>
