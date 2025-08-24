@@ -23,12 +23,36 @@ app.options('*', cors(corsOptions))
 app.use(express.json({ limit: '1mb' }))
 app.use(morgan('dev'))
 
-/* ---------- Supabase + JWT verify helpers ---------- */
-if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE) {
-  console.warn('⚠️ Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE')
+/* ---------- Supabase clients (admin + per-request) ---------- */
+if (!process.env.SUPABASE_URL) {
+  console.warn('⚠️ Missing SUPABASE_URL')
 }
-const supa = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE)
+if (!process.env.SUPABASE_SERVICE_ROLE) {
+  console.warn('⚠️ Missing SUPABASE_SERVICE_ROLE (used for privileged admin ops)')
+}
+if (!process.env.SUPABASE_ANON_KEY) {
+  console.warn('⚠️ Missing SUPABASE_ANON_KEY (used to forward user JWT to PostgREST)')
+}
 
+/** Admin client (service role) — use ONLY for privileged, server-side tasks */
+export const supabaseAdmin = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE
+)
+
+/** Build a user-scoped client from the incoming request (for RLS-protected queries) */
+function supabaseFromRequest(req) {
+  return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY, {
+    global: {
+      headers: {
+        // Forward the user's JWT so PostgREST/RLS sees auth.uid()
+        Authorization: req.headers.authorization || ''
+      }
+    }
+  })
+}
+
+/* ---------- JWT verification (Supabase) ---------- */
 const jwks = process.env.SUPABASE_JWKS_URL
   ? createRemoteJWKSet(new URL(process.env.SUPABASE_JWKS_URL))
   : null
@@ -53,8 +77,8 @@ async function verifySupabaseToken(token) {
 }
 
 /* ---------- Auth middlewares ---------- */
-// Strict guard for endpoints you explicitly protect in this file
-async function requireAuth(req, res, next) {
+// Strict guard for endpoints you explicitly protect here
+export async function requireAuth(req, res, next) {
   try {
     const auth = req.headers.authorization || ''
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : null
@@ -62,17 +86,18 @@ async function requireAuth(req, res, next) {
 
     const payload = await verifySupabaseToken(token)
     req.user = { id: payload.sub, email: payload.email }
-    next()
+    return next()
   } catch (err) {
     console.error('JWT verify failed:', err?.message)
     return res.status(401).json({ error: 'Invalid token', reason: err?.message })
   }
 }
 
-// Soft attach: populate req.user if a valid token is present, otherwise continue.
-// This is important because routes in routes/reviewRequests.js call their own
-// `requireAuth` that *checks* req.user — so we must attach it here.
+/** Soft attach: if a valid token exists, populate req.user. Always attach a user-scoped supabase client. */
 app.use(async (req, _res, next) => {
+  // Always attach a per-request Supabase client that forwards whatever Authorization header came in
+  req.supabase = supabaseFromRequest(req)
+
   const auth = req.headers.authorization || ''
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : null
   if (!token) return next()
@@ -80,10 +105,10 @@ app.use(async (req, _res, next) => {
     const payload = await verifySupabaseToken(token)
     req.user = { id: payload.sub, email: payload.email }
   } catch (e) {
-    // Don’t block the request here; the route-level guard will 401 if needed.
+    // Do not block here; route-level guards can enforce auth
     console.warn('attachUserIfPresent: bad token:', e?.message)
   }
-  next()
+  return next()
 })
 
 /* ---------- Routes ---------- */
@@ -97,11 +122,18 @@ app.get('/api/me', requireAuth, (req, res) => {
   res.json({ ok: true, user: req.user })
 })
 
-// … your agents/review-links/public/reviews routes remain unchanged …
-
-// Mount the reviewRequests router AFTER the attachUserIfPresent middleware.
-// Do NOT wrap with `requireAuth` here because that router contains some public
-// endpoints (like the token “opened/submitted” pings).
+/**
+ * IMPORTANT:
+ * The reviewRequests router should use `req.supabase` for all user-scoped DB calls,
+ * not a global/service client. That guarantees RLS sees the user's JWT.
+ *
+ * Example inside routes/reviewRequests.js:
+ *   router.post('/api/review-requests', requireAuth, async (req, res) => {
+ *     const sb = req.supabase;            // <-- user-scoped client
+ *     const { data, error } = await sb.from('review_requests').insert({...}).select('id').single()
+ *     ...
+ *   })
+ */
 app.use(reviewRequests)
 
 /* ---------- 404 ---------- */
