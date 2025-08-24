@@ -1,5 +1,44 @@
 import { Router } from 'express';
 import { createClient } from '@supabase/supabase-js';
+// --- add near the top of reviewRequests.js ---
+import { createRemoteJWKSet, jwtVerify, decodeProtectedHeader } from 'jose'
+
+const jwks = process.env.SUPABASE_JWKS_URL
+  ? createRemoteJWKSet(new URL(process.env.SUPABASE_JWKS_URL))
+  : null
+
+const hsSecret = process.env.SUPABASE_JWT_SECRET
+  ? new TextEncoder().encode(process.env.SUPABASE_JWT_SECRET)
+  : null
+
+async function verifySupabaseToken(token) {
+  const { alg } = decodeProtectedHeader(token) || {}
+  if (alg === 'RS256') {
+    if (!jwks) throw new Error('JWKS not configured')
+    const { payload } = await jwtVerify(token, jwks, { algorithms: ['RS256'], clockTolerance: 5 })
+    return payload
+  }
+  if (alg === 'HS256') {
+    if (!hsSecret) throw new Error('HS256 secret not configured')
+    const { payload } = await jwtVerify(token, hsSecret, { algorithms: ['HS256'], clockTolerance: 5 })
+    return payload
+  }
+  throw new Error(`Unsupported alg: ${alg}`)
+}
+
+async function attachUser(req, res, next) {
+  try {
+    const auth = req.headers.authorization || ''
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : null
+    if (!token) return res.status(401).json({ error: 'Missing token' })
+    const payload = await verifySupabaseToken(token)
+    req.user = { id: payload.sub, email: payload.email }
+    next()
+  } catch (e) {
+    return res.status(401).json({ error: 'Invalid token', reason: e?.message })
+  }
+}
+
 
 const router = Router();
 
