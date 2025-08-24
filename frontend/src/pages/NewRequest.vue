@@ -9,7 +9,10 @@ const platforms = ['google','facebook','zillow','realtor','internal'] as const
 const form = ref({
   client_name: '',
   client_email: '',
-  platform: platforms[0]
+  platform: platforms[0],
+  // optional extras if you want to customize the email:
+  subject: '',
+  body_template: ''
 })
 
 const loading = ref(false)
@@ -23,27 +26,52 @@ function sanitize() {
   }
 }
 
+function apiBase() {
+  // set this in your frontend env as VITE_API_BASE=https://agentaura-backend.onrender.com
+  return import.meta.env.VITE_API_BASE || 'http://localhost:8788'
+}
+
 async function submit() {
   loading.value = true
   error.value = null
   try {
     sanitize()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) throw new Error('Not authenticated')
 
-    // 👇 Do NOT send agent_id; DB sets it via default auth.uid()
-    const { error: insErr } = await supabase.from('review_requests').insert({
-      client_name: form.value.client_name,
-      client_email: form.value.client_email,
-      platform: form.value.platform,
-      channel: 'email',
-      status: 'pending'
+    const { data: { session }, error: sErr } = await supabase.auth.getSession()
+    if (sErr) throw sErr
+    if (!session?.access_token) throw new Error('Not authenticated')
+
+    const resp = await fetch(`${apiBase()}/api/review-requests`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({
+        client: {
+          name: form.value.client_name,
+          email: form.value.client_email,
+        },
+        channel: 'email',
+        // these two are optional; your backend handles defaults
+        subject: form.value.subject || undefined,
+        body_template: form.value.body_template || undefined,
+        // optional: draft_text/platform if you want to store them
+        draft_text: null,
+      }),
     })
-    if (insErr) throw insErr
+
+    const json = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      throw new Error(json?.error || `Request failed (${resp.status})`)
+    }
+
+    // Optionally inspect email send result:
+    // console.log('review-requests response:', json)
 
     router.push({ name: 'dashboard' })
-  } catch (e:any) {
-    error.value = e.message ?? 'Failed to create request'
+  } catch (e: any) {
+    error.value = e.message ?? 'Failed to send review request'
   } finally {
     loading.value = false
   }
@@ -65,14 +93,19 @@ async function submit() {
         <input id="email" v-model="form.client_email" type="email" class="border rounded p-2 w-full" required />
       </div>
 
+      <!-- Optional subject/body controls (can remove if you don’t want them in UI) -->
       <div>
-        <label class="block text-sm font-medium mb-1" for="platform">Platform</label>
-        <select id="platform" v-model="form.platform" class="border rounded p-2 w-full">
-          <option v-for="p in platforms" :key="p" :value="p">{{ p }}</option>
-        </select>
+        <label class="block text-sm font-medium mb-1" for="subject">Email subject (optional)</label>
+        <input id="subject" v-model="form.subject" class="border rounded p-2 w-full" placeholder="Quick review request" />
       </div>
 
-      <button :disabled="loading" class="px-4 py-2 rounded bg-black text-white">
+      <div>
+        <label class="block text-sm font-medium mb-1" for="body">Email body (optional HTML)</label>
+        <textarea id="body" v-model="form.body_template" class="border rounded p-2 w-full" rows="4"
+          placeholder="Leave blank to use the default template"></textarea>
+      </div>
+
+      <button :disabled="loading" class="px-4 py-2 rounded bg-black text-white w-full">
         {{ loading ? 'Sending…' : 'Send Request' }}
       </button>
     </form>
