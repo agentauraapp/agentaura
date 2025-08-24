@@ -102,31 +102,71 @@ async function upsertClient(agent_id, client) {
     err.status = 400
     throw err
   }
-  const matchCol = client.email ? 'email' : 'phone'
-  const matchVal = client[matchCol]
 
-  const { data: existing, error: e1 } = await supabaseAdmin
-    .from('clients')
-    .select('id')
-    .eq('agent_id', agent_id)
-    .eq(matchCol, matchVal)
-    .maybeSingle()
-  if (e1) throw e1
-  if (existing?.id) return existing.id
+  const email = client.email ? String(client.email).trim().toLowerCase() : null
+  const phone = client.phone ? String(client.phone).trim() : null
 
+  // 1) Try to find existing (case-insensitive for email)
+  if (email) {
+    const { data: existing, error: e1 } = await supabaseAdmin
+      .from('clients')
+      .select('id')
+      .eq('agent_id', agent_id)
+      .ilike('email', email)   // case-insensitive match
+      .maybeSingle()
+    if (e1) throw e1
+    if (existing?.id) return existing.id
+  } else if (phone) {
+    const { data: existing, error: e1 } = await supabaseAdmin
+      .from('clients')
+      .select('id')
+      .eq('agent_id', agent_id)
+      .eq('phone', phone)
+      .maybeSingle()
+    if (e1) throw e1
+    if (existing?.id) return existing.id
+  }
+
+  // 2) Insert (normalize); if a race creates it first, catch 23505 and re-select
   const { data, error } = await supabaseAdmin
     .from('clients')
     .insert({
       agent_id,
       name: client.name || null,
-      email: client.email || null,
-      phone: client.phone || null
+      email,
+      phone
     })
     .select('id')
     .single()
-  if (error) throw error
-  return data.id
+
+  if (!error && data?.id) return data.id
+
+  // Unique violation from a race → re-select and return that id
+  if (error?.code === '23505') {
+    if (email) {
+      const { data: again, error: e2 } = await supabaseAdmin
+        .from('clients')
+        .select('id')
+        .eq('agent_id', agent_id)
+        .ilike('email', email)
+        .maybeSingle()
+      if (e2) throw e2
+      if (again?.id) return again.id
+    } else if (phone) {
+      const { data: again, error: e2 } = await supabaseAdmin
+        .from('clients')
+        .select('id')
+        .eq('agent_id', agent_id)
+        .eq('phone', phone)
+        .maybeSingle()
+      if (e2) throw e2
+      if (again?.id) return again.id
+    }
+  }
+
+  throw error || new Error('Failed to upsert client')
 }
+
 
 /* ------------------- Routes ------------------- */
 
