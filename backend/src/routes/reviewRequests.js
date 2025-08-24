@@ -1,8 +1,23 @@
-import { Router } from 'express';
-import { createClient } from '@supabase/supabase-js';
-// --- add near the top of reviewRequests.js ---
+import { Router } from 'express'
+import { createClient } from '@supabase/supabase-js'
 import { createRemoteJWKSet, jwtVerify, decodeProtectedHeader } from 'jose'
 
+/* ------------------- Supabase clients ------------------- */
+const supabaseAdmin = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE,
+  { auth: { persistSession: false } }
+)
+
+/** Build a user-scoped client that forwards the incoming JWT (RLS-friendly) */
+function supabaseFromRequest(req) {
+  return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY, {
+    global: { headers: { Authorization: req.headers.authorization || '' } },
+    auth: { persistSession: false }
+  })
+}
+
+/* ------------------- JWT verification ------------------- */
 const jwks = process.env.SUPABASE_JWKS_URL
   ? createRemoteJWKSet(new URL(process.env.SUPABASE_JWKS_URL))
   : null
@@ -26,8 +41,13 @@ async function verifySupabaseToken(token) {
   throw new Error(`Unsupported alg: ${alg}`)
 }
 
+/* ------------------- Router & guards ------------------- */
+const router = Router()
+
+// Attach req.user (strict) + req.supabase (always)
 async function attachUser(req, res, next) {
   try {
+    req.supabase = supabaseFromRequest(req)
     const auth = req.headers.authorization || ''
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : null
     if (!token) return res.status(401).json({ error: 'Missing token' })
@@ -39,66 +59,56 @@ async function attachUser(req, res, next) {
   }
 }
 
+// For anonymous token pings, we still want a Supabase client attached (no user required)
+function attachSupabaseOnly(req, _res, next) {
+  req.supabase = supabaseFromRequest(req)
+  next()
+}
 
-const router = Router();
-
-const supabaseAdmin = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE,
-  { auth: { persistSession: false } }
-);
-
+// Call inside handlers that must have a user
 function requireAuth(req) {
   if (!req.user || !req.user.id) {
-    const err = new Error('Unauthorized');
-    err.status = 401;
-    throw err;
+    const err = new Error('Unauthorized')
+    err.status = 401
+    throw err
   }
 }
 
+/* ------------------- Helpers ------------------- */
+
+// If you map agents 1:1 with auth.users, you may not need this.
+// Leaving it in case you keep a separate `agents` table later.
 async function getAgentByUserId(userId) {
-  const { data, error } = await supabaseAdmin
-    .from('agents')
-    .select('id, display_name')
-    // If your agents table uses user_id instead of id, change this next line:
-    .eq('id', userId)
-    .maybeSingle();
-
-  if (error) throw error;
-  if (!data) {
-    const err = new Error('Agent not found');
-    err.status = 404;
-    throw err;
-  }
-  return { id: data.id, display_name: data.display_name ?? null };
+  // Here we just return the auth user id as agent id; adjust if you truly have an `agents` table
+  return { id: userId, display_name: null }
 }
 
+// If you use custom handles, resolve them. Otherwise fallback to agentId.
 async function getHandleForAgent(agentId) {
   const { data, error } = await supabaseAdmin
     .from('agent_handles')
     .select('handle')
     .eq('agent_id', agentId)
-    .maybeSingle();
-  if (error) throw error;
-  return (data && data.handle) ? data.handle : agentId; // fallback to UUID
+    .maybeSingle()
+  if (error) throw error
+  return data?.handle || agentId
 }
 
 async function upsertClient(agent_id, client) {
   if (!client || (!client.email && !client.phone)) {
-    throw new Error('Client email or phone required');
+    throw new Error('Client email or phone required')
   }
-
-  const matchCol = client.email ? 'email' : 'phone';
-  const matchVal = client[matchCol];
+  const matchCol = client.email ? 'email' : 'phone'
+  const matchVal = client[matchCol]
 
   const { data: existing, error: e1 } = await supabaseAdmin
     .from('clients')
     .select('id')
     .eq('agent_id', agent_id)
     .eq(matchCol, matchVal)
-    .maybeSingle();
-  if (e1) throw e1;
-  if (existing && existing.id) return existing.id;
+    .maybeSingle()
+  if (e1) throw e1
+  if (existing?.id) return existing.id
 
   const { data, error } = await supabaseAdmin
     .from('clients')
@@ -106,22 +116,26 @@ async function upsertClient(agent_id, client) {
       agent_id,
       name: client.name || null,
       email: client.email || null,
-      phone: client.phone || null,
+      phone: client.phone || null
     })
     .select('id')
-    .single();
-  if (error) throw error;
-  return data.id;
+    .single()
+  if (error) throw error
+  return data.id
 }
 
 /* ------------------- Routes ------------------- */
 
-// Create a review request + email (if channel=email and client has email)
-router.post('/api/review-requests', async (req, res, next) => {
+/**
+ * Create a review request (authenticated)
+ * Uses user-scoped client so RLS sees auth.uid(). We DO NOT send agent_id; DB sets it via default auth.uid().
+ */
+router.post('/api/review-requests', attachUser, async (req, res, next) => {
   try {
-    requireAuth(req);
-    const userId = req.user.id;
-    const agent = await getAgentByUserId(userId);
+    requireAuth(req)
+    const userId = req.user.id
+    const agent = await getAgentByUserId(userId)
+    const sb = req.supabase
 
     const {
       client,
@@ -129,81 +143,97 @@ router.post('/api/review-requests', async (req, res, next) => {
       channel = 'email',
       subject,
       body_template,
-    } = req.body || {};
+      platform = 'google', // if your table keeps platform on the request
+      status = 'pending'
+    } = req.body || {}
 
-    if (!client) throw new Error('client is required');
-    if (!['email', 'sms'].includes(channel)) {
-      const err = new Error('invalid channel');
-      err.status = 400;
-      throw err;
+    if (!client) {
+      const err = new Error('client is required')
+      err.status = 400
+      throw err
+    }
+    const allowedChannels = ['email', 'sms', 'link']
+    if (!allowedChannels.includes(channel)) {
+      const err = new Error('invalid channel')
+      err.status = 400
+      throw err
     }
 
-    const client_id = await upsertClient(agent.id, client);
+    // upsert client with admin (no RLS headaches here)
+    const client_id = await upsertClient(agent.id, client)
 
-    const { data, error } = await supabaseAdmin
+    // insert review request with USER client (RLS, auth.uid() = agent)
+    const { data, error } = await sb
       .from('review_requests')
       .insert({
-        agent_id: agent.id,
+        // agent_id: default auth.uid() (do NOT send)
         client_id,
         channel,
         subject: subject || null,
         body_template: body_template || null,
         draft_text: draft_text || null,
+        platform, // if your schema has platform in this table
+        status     // must match your CHECK constraint
       })
       .select('id, magic_link_token')
-      .single();
-    if (error) throw error;
+      .single()
 
-    const agentHandle = await getHandleForAgent(agent.id);
-    const base = process.env.FRONTEND_URL || 'http://localhost:5173';
+    if (error) {
+      const code = /violates|constraint|null value|check constraint|rls/i.test(error.message) ? 400 : 500
+      return res.status(code).json({ error: error.message })
+    }
+
+    const agentHandle = await getHandleForAgent(agent.id)
+    const base = process.env.FRONTEND_URL || 'http://localhost:5173'
     const magic_link_url =
-      `${base}/magic-submit?a=${encodeURIComponent(agentHandle)}&t=${data.magic_link_token}`;
+      `${base}/magic-submit?a=${encodeURIComponent(agentHandle)}&t=${data.magic_link_token}`
 
-    // Attempt to send email if requested
-    let emailResult = null;
-    let emailError = null;
-
+    // email send (best-effort)
+    let emailResult = null
+    let emailError = null
     if (channel === 'email' && client.email) {
       try {
-        const { sendReviewRequestEmail } = await import('../services/email.js'); // keep .js here
+        const { sendReviewRequestEmail } = await import('../services/email.js')
         emailResult = await sendReviewRequestEmail({
           to: client.email,
           agentDisplayName: agent.display_name || 'your agent',
           clientName: client.name,
           magicLinkUrl: magic_link_url,
           subject,
-          bodyTemplate: body_template,
-        });
-        console.log('[email] sent', { to: client.email, id: emailResult?.data?.id || emailResult?.id || null });
+          bodyTemplate: body_template
+        })
+        console.log('[email] sent', { to: client.email, id: emailResult?.data?.id || emailResult?.id || null })
       } catch (e) {
-        emailError = (e && e.message) ? String(e.message) : String(e);
-        console.error('[email] failed', { to: client.email, error: emailError });
+        emailError = e?.message ? String(e.message) : String(e)
+        console.error('[email] failed', { to: client.email, error: emailError })
       }
     }
 
-    res.status(201).json({
+    return res.status(201).json({
       id: data.id,
       magic_link_url,
       email: {
         ok: !emailError,
         id: (emailResult && (emailResult.data?.id || emailResult.id)) || null,
-        error: emailError,
-      },
-    });
+        error: emailError
+      }
+    })
   } catch (err) {
-    next(err);
+    next(err)
   }
-});
+})
 
-// List review requests (optionally filter by status)
-router.get('/api/review-requests', async (req, res, next) => {
+/**
+ * List review requests (authenticated)
+ * Uses user client + optional status filter. Also selects nested review_submissions for dashboard badges.
+ */
+router.get('/api/review-requests', attachUser, async (req, res, next) => {
   try {
-    requireAuth(req);
-    const userId = req.user.id;
-    const agent = await getAgentByUserId(userId);
+    requireAuth(req)
+    const sb = req.supabase
+    const { status, limit = 50 } = req.query || {}
 
-    const { status, limit = 50 } = req.query || {};
-    let query = supabaseAdmin
+    let query = sb
       .from('review_requests')
       .select(`
         id,
@@ -212,97 +242,110 @@ router.get('/api/review-requests', async (req, res, next) => {
         created_at,
         opened_at,
         submitted_at,
-        clients:client_id ( name, email, phone )
+        platform,
+        clients:client_id ( name, email, phone ),
+        review_submissions ( id, platform, clicked_at, posted_claimed_at, verification_status, external_url )
       `)
-      .eq('agent_id', agent.id)
       .order('created_at', { ascending: false })
-      .limit(Math.min(Number(limit) || 50, 100));
+      .limit(Math.min(Number(limit) || 50, 100))
 
-    if (status) query = query.eq('status', status);
+    // If your RLS already restricts by auth.uid() on agent_id you don't need eq('agent_id', ...).
+    // Leaving it out to avoid leaking if policy is misconfigured.
 
-    const { data, error } = await query;
-    if (error) throw error;
-    res.json({ items: data || [] });
+    if (status) query = query.eq('status', status)
+
+    const { data, error } = await query
+    if (error) {
+      const code = /rls|permission|policy/i.test(error.message) ? 401 : 400
+      return res.status(code).json({ error: error.message })
+    }
+
+    return res.json({ items: data || [] })
   } catch (err) {
-    next(err);
+    next(err)
   }
-});
+})
 
-// Anonymous token ping: opened
-router.post('/api/review-requests/:id/opened', async (req, res, next) => {
+/**
+ * Anonymous token ping: opened
+ * Uses admin client; validates magic_link_token and stamps opened_at/status.
+ */
+router.post('/api/review-requests/:id/opened', attachSupabaseOnly, async (req, res, next) => {
   try {
-    const { id } = req.params;
-    const { token } = req.body || {};
+    const { id } = req.params
+    const { token } = req.body || {}
     if (!token) {
-      const err = new Error('token required');
-      err.status = 400;
-      throw err;
+      const err = new Error('token required')
+      err.status = 400
+      throw err
     }
 
     const { data: rr, error: e1 } = await supabaseAdmin
       .from('review_requests')
       .select('id, status, magic_link_token, opened_at')
       .eq('id', id)
-      .single();
-    if (e1) throw e1;
+      .single()
+    if (e1) throw e1
 
     if (rr.magic_link_token !== token) {
-      const err = new Error('forbidden');
-      err.status = 403;
-      throw err;
+      const err = new Error('forbidden')
+      err.status = 403
+      throw err
     }
 
     if (!rr.opened_at) {
       const { error: e2 } = await supabaseAdmin
         .from('review_requests')
         .update({ status: 'opened', opened_at: new Date().toISOString() })
-        .eq('id', id);
-      if (e2) throw e2;
+        .eq('id', id)
+      if (e2) throw e2
     }
 
-    res.json({ ok: true });
+    return res.json({ ok: true })
   } catch (err) {
-    next(err);
+    next(err)
   }
-});
+})
 
-// Anonymous token ping: submitted
-router.post('/api/review-requests/:id/submitted', async (req, res, next) => {
+/**
+ * Anonymous token ping: submitted
+ */
+router.post('/api/review-requests/:id/submitted', attachSupabaseOnly, async (req, res, next) => {
   try {
-    const { id } = req.params;
-    const { token } = req.body || {};
+    const { id } = req.params
+    const { token } = req.body || {}
     if (!token) {
-      const err = new Error('token required');
-      err.status = 400;
-      throw err;
+      const err = new Error('token required')
+      err.status = 400
+      throw err
     }
 
     const { data: rr, error: e1 } = await supabaseAdmin
       .from('review_requests')
       .select('id, status, magic_link_token, submitted_at')
       .eq('id', id)
-      .single();
-    if (e1) throw e1;
+      .single()
+    if (e1) throw e1
 
     if (rr.magic_link_token !== token) {
-      const err = new Error('forbidden');
-      err.status = 403;
-      throw err;
+      const err = new Error('forbidden')
+      err.status = 403
+      throw err
     }
 
     if (!rr.submitted_at) {
       const { error: e2 } = await supabaseAdmin
         .from('review_requests')
         .update({ status: 'submitted', submitted_at: new Date().toISOString() })
-        .eq('id', id);
-      if (e2) throw e2;
+        .eq('id', id)
+      if (e2) throw e2
     }
 
-    res.json({ ok: true });
+    return res.json({ ok: true })
   } catch (err) {
-    next(err);
+    next(err)
   }
-});
+})
 
-console.log('✔ routes/reviewRequests loaded');
-export default router;
+console.log('✔ routes/reviewRequests loaded')
+export default router
