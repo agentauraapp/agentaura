@@ -116,7 +116,7 @@ router.post('/api/review-requests', async (req, res, next) => {
     if (error) throw error;
 
     const agentHandle = await getHandleForAgent(agent.id);
-    const base = process.env.FRONTEND_BASE_URL || 'http://localhost:5173';
+    const base = process.env.FRONTEND_URL || 'http://localhost:5173';
     const magic_link_url =
       `${base}/magic-submit?a=${encodeURIComponent(agentHandle)}&t=${data.magic_link_token}`;
 
