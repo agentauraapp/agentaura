@@ -1,61 +1,63 @@
 // backend/services/email.js
 import { Resend } from 'resend';
 
-const haveKey = !!process.env.RESEND_API_KEY;
-let resend = null;
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
-try {
-  if (haveKey) {
-    resend = new Resend(process.env.RESEND_API_KEY);
-  }
-} catch (e) {
-  // If the SDK import/construct fails, we’ll log it and still simulate.
-  console.error('[email] Failed to init Resend SDK:', e);
+// very small template helper: replaces {{ key }} with ctx[key]
+function renderTemplate(tpl = '', ctx = {}) {
+  return String(tpl).replace(/{{\s*(\w+)\s*}}/g, (_, k) => {
+    const val = ctx[k];
+    return (val === undefined || val === null) ? '' : String(val);
+  });
 }
 
+/**
+ * Sends the review request email via Resend (or logs in dev).
+ */
 export async function sendReviewRequestEmail({
   to,
-  agentDisplayName,
-  clientName,
-  magicLinkUrl,
   subject,
-  bodyTemplate,
+  bodyTemplate,    // raw template containing {{placeholders}}
+  context = {},    // { agent_name, client_name, magic_link_url, agent_title_or_team, agent_phone, ... }
+  fallbackHtml,    // optional: raw html to use if bodyTemplate is empty
+  from,
 }) {
-  const from = process.env.EMAIL_FROM || 'onboarding@resend.dev';
-  const finalSubject = subject || `Quick review for ${agentDisplayName ?? 'your agent'}`;
-  const html =
-    bodyTemplate ??
-    `
-      <p>Hi ${clientName || 'there'},</p>
-      <p>Could you leave a quick review? It really helps!</p>
-      <p><a href="${magicLinkUrl}" target="_blank" rel="noopener">Leave a review</a></p>
-      <p>Thank you, ${agentDisplayName || 'Your Agent'}</p>
-    `;
+  const finalFrom = from || process.env.EMAIL_FROM || 'onboarding@resend.dev';
 
-  // Always log inputs (sanitized) so we can trace from Render logs
-  console.log('[email] sendReviewRequestEmail called', {
-    to,
-    from,
-    haveKey,
-    subject: finalSubject,
-    hasHtml: !!html,
-  });
+  // render subject + html using the same context
+  const finalSubject = renderTemplate(subject || 'Quick review for {{agent_name}}', context);
 
-  if (!haveKey || !resend) {
-    const result = {
-      data: { id: 'local-log', simulated: true },
-      error: null,
-    };
-    console.log('[email] SIMULATED send (missing key or SDK). Result:', result);
-    return result;
-  }
+  const html = renderTemplate(
+    bodyTemplate ||
+      fallbackHtml ||
+      `
+        <p>Hi {{client_name}},</p>
+        <p>Could you share a quick review of your experience with {{agent_name}}?</p>
+        <p>
+          <a href="{{magic_link_url}}" target="_blank" rel="noopener">Leave a review</a>
+        </p>
+        <p>Thanks!<br/>{{agent_name}}<br/>{{agent_title_or_team}}<br/>{{agent_phone}}</p>
+      `,
+    context
+  );
 
   try {
-    const result = await resend.emails.send({ from, to, subject: finalSubject, html });
-    console.log('[email] Resend response:', { id: result?.data?.id, error: result?.error });
+    if (!resend) {
+      console.log('[sendReviewRequestEmail] (DEV LOG ONLY)', { to, finalSubject, htmlPreview: html.slice(0, 500) });
+      return { data: { id: 'local-log', simulated: true }, error: null };
+    }
+
+    const result = await resend.emails.send({
+      from: finalFrom,
+      to,
+      subject: finalSubject,
+      html,
+    });
+
+    console.log('[sendReviewRequestEmail] sent', { to, id: result?.data?.id, error: result?.error });
     return result;
   } catch (err) {
-    console.error('[email] Resend error:', err);
+    console.error('[sendReviewRequestEmail] error', err);
     throw err;
   }
 }
