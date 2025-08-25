@@ -1,3 +1,4 @@
+// backend/src/routes/reviewRequests.js
 import { Router } from 'express'
 import { createClient } from '@supabase/supabase-js'
 import { createRemoteJWKSet, jwtVerify, decodeProtectedHeader } from 'jose'
@@ -12,7 +13,7 @@ const supabaseAdmin = createClient(
 /** Build a user-scoped client that forwards the incoming JWT (RLS-friendly) */
 function supabaseFromRequest(req) {
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
-    throw new Error('Backend missing SUPABASE_URL or SUPABASE_ANON_KEY; set env vars on the backend service.')
+    throw new Error('Backend missing SUPABASE_URL or SUPABASE_ANON_KEY.')
   }
   return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY, {
     global: { headers: { Authorization: req.headers.authorization || '' } },
@@ -47,7 +48,6 @@ async function verifySupabaseToken(token) {
 /* ------------------- Router & guards ------------------- */
 const router = Router()
 
-// Attach req.user (strict) + req.supabase (always)
 async function attachUser(req, res, next) {
   try {
     req.supabase = supabaseFromRequest(req)
@@ -62,15 +62,13 @@ async function attachUser(req, res, next) {
   }
 }
 
-// For anonymous token pings, we still want a Supabase client attached (no user required)
 function attachSupabaseOnly(req, _res, next) {
   req.supabase = supabaseFromRequest(req)
   next()
 }
 
-// Call inside handlers that must have a user
 function requireAuth(req) {
-  if (!req.user || !req.user.id) {
+  if (!req.user?.id) {
     const err = new Error('Unauthorized')
     err.status = 401
     throw err
@@ -79,13 +77,20 @@ function requireAuth(req) {
 
 /* ------------------- Helpers ------------------- */
 
-// If you map agents 1:1 with auth.users, you may not need this.
-// Here we just return the auth user id as agent id; adjust if you truly have an `agents` table
+/** If agents == auth.users 1:1, you can just return id; otherwise pull from agents table */
 async function getAgentByUserId(userId) {
-  return { id: userId, display_name: null }
+  // Try to read a profile row; fall back to minimal
+  const { data, error } = await supabaseAdmin
+    .from('agents')
+    .select('id, display_name, brokerage, logo_url, theme_color')
+    .eq('id', userId)
+    .maybeSingle()
+
+  if (error) throw error
+  if (data) return data
+  return { id: userId, display_name: null, brokerage: null, logo_url: null, theme_color: null }
 }
 
-// If you use custom handles, resolve them. Otherwise fallback to agentId.
 async function getHandleForAgent(agentId) {
   const { data, error } = await supabaseAdmin
     .from('agent_handles')
@@ -96,90 +101,106 @@ async function getHandleForAgent(agentId) {
   return data?.handle || agentId
 }
 
+/** optional review links (for {{google_url}} etc.) */
+async function getReviewLinks(agentId) {
+  const { data, error } = await supabaseAdmin
+    .from('review_links')
+    .select('platform, url')
+    .eq('agent_id', agentId)
+  if (error) throw error
+  const map = Object.create(null)
+  ;(data || []).forEach(r => { map[r.platform] = r.url })
+  return map
+}
+
+/** find or create client; email is matched case-insensitively */
 async function upsertClient(agent_id, client) {
   if (!client || (!client.email && !client.phone)) {
     const err = new Error('Client email or phone required')
     err.status = 400
     throw err
   }
-
   const email = client.email ? String(client.email).trim().toLowerCase() : null
   const phone = client.phone ? String(client.phone).trim() : null
 
-  // 1) Try to find existing (case-insensitive for email)
   if (email) {
     const { data: existing, error: e1 } = await supabaseAdmin
-      .from('clients')
-      .select('id')
-      .eq('agent_id', agent_id)
-      .ilike('email', email)   // case-insensitive match
-      .maybeSingle()
+      .from('clients').select('id')
+      .eq('agent_id', agent_id).ilike('email', email).maybeSingle()
     if (e1) throw e1
     if (existing?.id) return existing.id
   } else if (phone) {
     const { data: existing, error: e1 } = await supabaseAdmin
-      .from('clients')
-      .select('id')
-      .eq('agent_id', agent_id)
-      .eq('phone', phone)
-      .maybeSingle()
+      .from('clients').select('id')
+      .eq('agent_id', agent_id).eq('phone', phone).maybeSingle()
     if (e1) throw e1
     if (existing?.id) return existing.id
   }
 
-  // 2) Insert (normalize); if a race creates it first, catch 23505 and re-select
   const { data, error } = await supabaseAdmin
     .from('clients')
-    .insert({
-      agent_id,
-      name: client.name || null,
-      email,
-      phone
-    })
+    .insert({ agent_id, name: client.name || null, email, phone })
     .select('id')
     .single()
 
   if (!error && data?.id) return data.id
 
-  // Unique violation from a race → re-select and return that id
   if (error?.code === '23505') {
-    if (email) {
-      const { data: again, error: e2 } = await supabaseAdmin
-        .from('clients')
-        .select('id')
-        .eq('agent_id', agent_id)
-        .ilike('email', email)
-        .maybeSingle()
-      if (e2) throw e2
-      if (again?.id) return again.id
-    } else if (phone) {
-      const { data: again, error: e2 } = await supabaseAdmin
-        .from('clients')
-        .select('id')
-        .eq('agent_id', agent_id)
-        .eq('phone', phone)
-        .maybeSingle()
-      if (e2) throw e2
-      if (again?.id) return again.id
-    }
+    // race: reselect
+    const col = email ? ['email', 'ilike', email] : ['phone', 'eq', phone]
+    const { data: again, error: e2 } = await supabaseAdmin
+      .from('clients').select('id')
+      .eq('agent_id', agent_id)[col[1]](col[0], col[2]).maybeSingle()
+    if (e2) throw e2
+    if (again?.id) return again.id
   }
-
   throw error || new Error('Failed to upsert client')
 }
 
+/** very small mustache-style renderer for {{tokens}} */
+function renderTemplate(tpl, vars) {
+  return String(tpl || '').replace(/\{\{\s*([a-z0-9_]+)\s*\}\}/gi, (_, k) => {
+    const v = vars[k] ?? ''
+    return v == null ? '' : String(v)
+  })
+}
+
+/** build subject + html from defaults or custom inputs */
+function buildEmailContent({ subject, body_template, vars }) {
+  const defaultSubject = `Quick favor: 60-second review for {{agent_name}}?`
+  const defaultBody = `
+    <p>Hi {{client_name}},</p>
+    <p>Thanks again for working with me! If you have a minute, could you share a quick review of your experience?</p>
+    <p>You can pick your favorite site:</p>
+    <ul>
+      {{google_li}}{{facebook_li}}{{zillow_li}}{{realtor_li}}
+    </ul>
+    <p>Or use this quick link: <a href="{{magic_link_url}}">{{magic_link_url}}</a></p>
+    <p>Thanks so much,<br/>{{agent_name}}<br/>{{agent_title_or_team}}</p>
+  `
+
+  const s = renderTemplate(subject || defaultSubject, vars)
+  // Build <li> links if present
+  const li = (label, url) => url ? `<li><a href="${url}">${label}</a></li>` : ''
+  const htmlVars = {
+    ...vars,
+    google_li: li('Google', vars.google_url),
+    facebook_li: li('Facebook', vars.facebook_url),
+    zillow_li: li('Zillow', vars.zillow_url),
+    realtor_li: li('Realtor', vars.realtor_url)
+  }
+  const h = renderTemplate(body_template || defaultBody, htmlVars)
+  return { subject: s, html: h }
+}
 
 /* ------------------- Routes ------------------- */
 
-/**
- * Create a review request (authenticated)
- * Uses user-scoped client so RLS sees auth.uid(). We DO NOT send agent_id; DB sets it via default auth.uid().
- */
+/** Create a review request + send email (authenticated) */
 router.post('/api/review-requests', attachUser, async (req, res, next) => {
   try {
     requireAuth(req)
-    const userId = req.user.id
-    const agent = await getAgentByUserId(userId)
     const sb = req.supabase
+    const userId = req.user.id
 
     const {
       client,
@@ -187,7 +208,7 @@ router.post('/api/review-requests', attachUser, async (req, res, next) => {
       channel = 'email',
       subject,
       body_template,
-      platform = 'google', // if your table keeps platform on the request
+      platform = 'google',
       status = 'pending'
     } = req.body || {}
 
@@ -195,54 +216,34 @@ router.post('/api/review-requests', attachUser, async (req, res, next) => {
     const allowedPlatforms = ['google','facebook','zillow','realtor','internal']
     const allowedStatuses  = ['pending','sent','opened','posted','failed','submitted']
 
-    if (!client) {
-      const err = new Error('client is required')
-      err.status = 400
-      throw err
-    }
-    if (!allowedChannels.includes(channel)) {
-      const err = new Error(`invalid channel (allowed: ${allowedChannels.join(', ')})`)
-      err.status = 400
-      throw err
-    }
-    if (platform && !allowedPlatforms.includes(platform)) {
-      const err = new Error(`invalid platform (allowed: ${allowedPlatforms.join(', ')})`)
-      err.status = 400
-      throw err
-    }
-    if (status && !allowedStatuses.includes(status)) {
-      const err = new Error(`invalid status (allowed: ${allowedStatuses.join(', ')})`)
-      err.status = 400
-      throw err
-    }
+    if (!client) throw Object.assign(new Error('client is required'), { status: 400 })
+    if (!allowedChannels.includes(channel)) throw Object.assign(new Error('invalid channel'), { status: 400 })
+    if (platform && !allowedPlatforms.includes(platform)) throw Object.assign(new Error('invalid platform'), { status: 400 })
+    if (status && !allowedStatuses.includes(status)) throw Object.assign(new Error('invalid status'), { status: 400 })
 
-    // upsert client with admin (no RLS headaches here)
+    // resolve agent + links
+    const agent = await getAgentByUserId(userId)
+    const links = await getReviewLinks(agent.id)
+
     const client_id = await upsertClient(agent.id, client)
 
-    // insert review request with USER client (RLS, auth.uid() = agent)
     const { data, error } = await sb
       .from('review_requests')
       .insert({
-        // agent_id: default auth.uid() (do NOT send)
         client_id,
         channel,
         subject: subject || null,
         body_template: body_template || null,
         draft_text: draft_text || null,
-        platform, // if your schema has platform in this table
-        status     // must match your CHECK constraint
+        platform,
+        status
       })
       .select('id, magic_link_token')
       .single()
 
     if (error) {
       const code = /violates|constraint|null value|check constraint|rls/i.test(error.message) ? 400 : 500
-      return res.status(code).json({
-        error: error.message,
-        code: error.code,
-        details: error.details,
-        hint: error.hint
-      })
+      return res.status(code).json({ error: error.message, code: error.code, details: error.details, hint: error.hint })
     }
 
     const agentHandle = await getHandleForAgent(agent.id)
@@ -250,7 +251,27 @@ router.post('/api/review-requests', attachUser, async (req, res, next) => {
     const magic_link_url =
       `${base}/magic-submit?rid=${data.id}&a=${encodeURIComponent(agentHandle)}&t=${data.magic_link_token}`
 
-    // email send (best-effort)
+    // Prepare interpolation vars
+    const vars = {
+      // agent
+      agent_name: agent.display_name || 'your agent',
+      agent_title_or_team: agent.brokerage || '',
+      agent_handle: agentHandle,
+      // client
+      client_name: client.name || 'there',
+      client_email: (client.email || '').toLowerCase(),
+      // links
+      magic_link_url,
+      google_url: links.google || '',
+      facebook_url: links.facebook || '',
+      zillow_url: links.zillow || '',
+      realtor_url: links.realtor || ''
+    }
+
+    // Render subject/body (use defaults if missing)
+    const { subject: finalSubject, html } = buildEmailContent({ subject, body_template, vars })
+
+    // Attempt email send
     let emailResult = null
     let emailError = null
     if (channel === 'email' && client.email) {
@@ -261,8 +282,8 @@ router.post('/api/review-requests', attachUser, async (req, res, next) => {
           agentDisplayName: agent.display_name || 'your agent',
           clientName: client.name,
           magicLinkUrl: magic_link_url,
-          subject,
-          bodyTemplate: body_template
+          subject: finalSubject,
+          bodyTemplate: html
         })
         console.log('[email] sent', { to: client.email, id: emailResult?.data?.id || emailResult?.id || null })
       } catch (e) {
@@ -285,10 +306,7 @@ router.post('/api/review-requests', attachUser, async (req, res, next) => {
   }
 })
 
-/**
- * List review requests (authenticated)
- * Uses user client + optional status filter. Also selects nested review_submissions for dashboard badges.
- */
+/** List review requests for dashboard */
 router.get('/api/review-requests', attachUser, async (req, res, next) => {
   try {
     requireAuth(req)
@@ -325,32 +343,19 @@ router.get('/api/review-requests', attachUser, async (req, res, next) => {
   }
 })
 
-/**
- * Anonymous token ping: opened
- * Uses admin client; validates magic_link_token and stamps opened_at/status.
- */
+/** Anonymous token ping: opened */
 router.post('/api/review-requests/:id/opened', attachSupabaseOnly, async (req, res, next) => {
   try {
     const { id } = req.params
     const { token } = req.body || {}
-    if (!token) {
-      const err = new Error('token required')
-      err.status = 400
-      throw err
-    }
+    if (!token) return res.status(400).json({ error: 'token required' })
 
     const { data: rr, error: e1 } = await supabaseAdmin
-      .from('review_requests')
-      .select('id, status, magic_link_token, opened_at')
-      .eq('id', id)
-      .single()
+      .from('review_requests').select('id, status, magic_link_token, opened_at')
+      .eq('id', id).single()
     if (e1) throw e1
 
-    if (rr.magic_link_token !== token) {
-      const err = new Error('forbidden')
-      err.status = 403
-      throw err
-    }
+    if (rr.magic_link_token !== token) return res.status(403).json({ error: 'forbidden' })
 
     if (!rr.opened_at) {
       const { error: e2 } = await supabaseAdmin
@@ -366,31 +371,19 @@ router.post('/api/review-requests/:id/opened', attachSupabaseOnly, async (req, r
   }
 })
 
-/**
- * Anonymous token ping: submitted
- */
+/** Anonymous token ping: submitted */
 router.post('/api/review-requests/:id/submitted', attachSupabaseOnly, async (req, res, next) => {
   try {
     const { id } = req.params
     const { token } = req.body || {}
-    if (!token) {
-      const err = new Error('token required')
-      err.status = 400
-      throw err
-    }
+    if (!token) return res.status(400).json({ error: 'token required' })
 
     const { data: rr, error: e1 } = await supabaseAdmin
-      .from('review_requests')
-      .select('id, status, magic_link_token, submitted_at')
-      .eq('id', id)
-      .single()
+      .from('review_requests').select('id, status, magic_link_token, submitted_at')
+      .eq('id', id).single()
     if (e1) throw e1
 
-    if (rr.magic_link_token !== token) {
-      const err = new Error('forbidden')
-      err.status = 403
-      throw err
-    }
+    if (rr.magic_link_token !== token) return res.status(403).json({ error: 'forbidden' })
 
     if (!rr.submitted_at) {
       const { error: e2 } = await supabaseAdmin
@@ -410,10 +403,7 @@ router.post('/api/review-requests/:id/submitted', attachSupabaseOnly, async (req
 router.use((err, _req, res, _next) => {
   const code = err.status || (/violates|constraint|null value|check constraint|rls/i.test(err.message) ? 400 : 500)
   console.error('[reviewRequests]', { code, message: err.message, stack: err.stack })
-  return res.status(code).json({
-    error: err.message || 'Internal error',
-    code
-  })
+  return res.status(code).json({ error: err.message || 'Internal error', code })
 })
 
 console.log('✔ routes/reviewRequests loaded')
