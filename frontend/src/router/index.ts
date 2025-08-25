@@ -13,6 +13,7 @@ const router = createRouter({
     { path: '/signup', name: 'signup', component: Signup },
     { path: '/', name: 'dashboard', component: Dashboard, meta: { requiresAuth: true } },
     { path: '/requests/new', name: 'request-new', component: NewRequest, meta: { requiresAuth: true } },
+    { path: '/magic-submit', name: 'magic-submit', component: () => import('@/pages/MagicSubmit.vue') },
     { path: '/:pathMatch(.*)*', redirect: '/' }
   ]
 })
